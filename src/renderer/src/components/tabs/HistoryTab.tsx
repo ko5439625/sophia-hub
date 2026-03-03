@@ -1,5 +1,199 @@
 import { useEffect, useState } from 'react'
+import { colors, typography, spacing, radius, transition } from '../../styles/tokens'
 
+// ─── Parse markdown into date sections ───────────────────────
+type DateSection = {
+  title: string // e.g. "2026-02-27 세션"
+  content: string
+}
+
+function parseDateSections(text: string): DateSection[] {
+  const lines = text.split('\n')
+  const sections: DateSection[] = []
+  let currentTitle = ''
+  let currentLines: string[] = []
+
+  for (const line of lines) {
+    // Match ## date heading (e.g. ## 2026-02-27 세션)
+    const dateMatch = line.match(/^## (\d{4}-\d{2}-\d{2}.*)$/)
+    if (dateMatch) {
+      if (currentTitle) {
+        sections.push({ title: currentTitle, content: currentLines.join('\n') })
+      }
+      currentTitle = dateMatch[1]
+      currentLines = []
+    } else if (currentTitle) {
+      currentLines.push(line)
+    } else {
+      // Lines before the first date section (title etc.) — skip or include
+      if (line.startsWith('# ')) continue // skip top-level heading
+      if (line.trim()) currentLines.push(line)
+    }
+  }
+  if (currentTitle) {
+    sections.push({ title: currentTitle, content: currentLines.join('\n') })
+  }
+
+  // If no date sections found, return entire content as one section
+  if (sections.length === 0 && text.trim()) {
+    sections.push({ title: '전체', content: text })
+  }
+
+  return sections
+}
+
+// ─── Render markdown content ─────────────────────────────────
+function renderContent(text: string): JSX.Element[] {
+  const lines = text.split('\n')
+  const elements: JSX.Element[] = []
+  let tableRows: string[][] = []
+  let tableHeaders: string[] = []
+  let inTable = false
+
+  const flushTable = (): void => {
+    if (tableHeaders.length === 0) return
+    elements.push(
+      <div key={`tbl-${elements.length}`} style={{
+        overflowX: 'auto', marginBottom: spacing.md, borderRadius: radius.sm,
+        border: `1px solid ${colors.border.primary}`
+      }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 10 }}>
+          <thead>
+            <tr>
+              {tableHeaders.map((h, i) => (
+                <th key={i} style={{
+                  padding: '6px 8px', textAlign: 'left',
+                  background: colors.bg.card, color: colors.text.secondary,
+                  borderBottom: `1px solid ${colors.border.primary}`, fontWeight: 600, whiteSpace: 'nowrap'
+                }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {tableRows.map((row, ri) => (
+              <tr key={ri}>
+                {row.map((cell, ci) => (
+                  <td key={ci} style={{
+                    padding: '5px 8px', color: colors.text.secondary,
+                    borderBottom: `1px solid ${colors.border.subtle}`
+                  }}>{cell}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    )
+    tableHeaders = []
+    tableRows = []
+  }
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+
+    if (line.trim().startsWith('|') && line.trim().endsWith('|')) {
+      const cells = line.split('|').slice(1, -1).map((c) => c.trim())
+      if (cells.every((c) => /^[-:]+$/.test(c))) { inTable = true; continue }
+      if (!inTable) {
+        tableHeaders = cells
+        inTable = true
+      } else {
+        tableRows.push(cells)
+      }
+      continue
+    }
+
+    if (inTable) { flushTable(); inTable = false }
+
+    if (line.startsWith('### ')) {
+      elements.push(
+        <div key={i} style={{ fontSize: 12, fontWeight: 600, color: colors.status.info, marginTop: 14, marginBottom: 6 }}>
+          {line.replace('### ', '')}
+        </div>
+      )
+    } else if (line.startsWith('## ')) {
+      elements.push(
+        <div key={i} style={{ ...typography.subtitle, color: colors.text.primary, marginTop: spacing.lg, marginBottom: spacing.sm }}>
+          {line.replace('## ', '')}
+        </div>
+      )
+    } else if (line.startsWith('# ')) {
+      elements.push(
+        <div key={i} style={{
+          ...typography.title, marginBottom: 10,
+          color: colors.accent.primary
+        }}>
+          {line.replace('# ', '')}
+        </div>
+      )
+    } else if (line.startsWith('- ')) {
+      elements.push(
+        <div key={i} style={{ ...typography.caption, color: colors.text.secondary, paddingLeft: 10, lineHeight: 1.7 }}>
+          {'• ' + line.slice(2)}
+        </div>
+      )
+    } else if (line.trim()) {
+      elements.push(
+        <div key={i} style={{ ...typography.caption, color: colors.text.tertiary, lineHeight: 1.6 }}>
+          {line}
+        </div>
+      )
+    }
+  }
+  if (inTable) flushTable()
+  return elements
+}
+
+// ─── Collapsible Date Section ────────────────────────────────
+function DateSectionCard({
+  section,
+  defaultOpen
+}: {
+  section: DateSection
+  defaultOpen: boolean
+}): JSX.Element {
+  const [open, setOpen] = useState(defaultOpen)
+
+  return (
+    <div style={{
+      marginBottom: spacing.sm,
+      borderRadius: radius.md,
+      border: `1px solid ${open ? colors.border.accent : colors.border.primary}`,
+      overflow: 'hidden',
+      transition: transition.fast
+    }}>
+      <button
+        onClick={() => setOpen(!open)}
+        style={{
+          width: '100%', textAlign: 'left',
+          padding: '10px 14px',
+          background: open ? colors.bg.cardHover : colors.bg.elevated,
+          border: 'none', cursor: 'pointer',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          transition: transition.fast
+        }}
+        onMouseEnter={(e) => { e.currentTarget.style.background = colors.bg.cardHover }}
+        onMouseLeave={(e) => { e.currentTarget.style.background = open ? colors.bg.cardHover : colors.bg.elevated }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: spacing.sm }}>
+          <span style={{ fontSize: 12, transition: transition.fast }}>
+            {open ? '▾' : '▸'}
+          </span>
+          <span style={{ ...typography.subtitle, fontSize: 12, color: colors.text.primary }}>
+            {section.title}
+          </span>
+        </div>
+      </button>
+      {open && (
+        <div style={{ padding: `${spacing.sm}px ${spacing.md}px ${spacing.md}px` }}>
+          {renderContent(section.content)}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Main Component ──────────────────────────────────────────
 export default function HistoryTab(): JSX.Element {
   const [files, setFiles] = useState<Array<{ name: string; label: string }>>([])
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
@@ -21,120 +215,20 @@ export default function HistoryTab(): JSX.Element {
     window.api.getMemoryContent(name).then(setContent)
   }
 
-  // 마크다운 테이블/헤딩을 간단히 렌더링
-  const renderContent = (text: string): JSX.Element[] => {
-    const lines = text.split('\n')
-    const elements: JSX.Element[] = []
-    let tableRows: string[][] = []
-    let tableHeaders: string[] = []
-    let inTable = false
-
-    const flushTable = (): void => {
-      if (tableHeaders.length === 0) return
-      elements.push(
-        <div key={`tbl-${elements.length}`} style={{
-          overflowX: 'auto', marginBottom: 12, borderRadius: 8,
-          border: '1px solid rgba(255,255,255,0.06)'
-        }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 10 }}>
-            <thead>
-              <tr>
-                {tableHeaders.map((h, i) => (
-                  <th key={i} style={{
-                    padding: '6px 8px', textAlign: 'left',
-                    background: 'rgba(255,255,255,0.04)', color: 'rgba(255,255,255,0.5)',
-                    borderBottom: '1px solid rgba(255,255,255,0.06)', fontWeight: 600, whiteSpace: 'nowrap'
-                  }}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {tableRows.map((row, ri) => (
-                <tr key={ri}>
-                  {row.map((cell, ci) => (
-                    <td key={ci} style={{
-                      padding: '5px 8px', color: 'rgba(255,255,255,0.6)',
-                      borderBottom: '1px solid rgba(255,255,255,0.03)'
-                    }}>{cell}</td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )
-      tableHeaders = []
-      tableRows = []
-    }
-
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i]
-
-      if (line.trim().startsWith('|') && line.trim().endsWith('|')) {
-        const cells = line.split('|').slice(1, -1).map((c) => c.trim())
-        if (cells.every((c) => /^[-:]+$/.test(c))) { inTable = true; continue }
-        if (!inTable) {
-          tableHeaders = cells
-          inTable = true
-        } else {
-          tableRows.push(cells)
-        }
-        continue
-      }
-
-      if (inTable) { flushTable(); inTable = false }
-
-      if (line.startsWith('### ')) {
-        elements.push(
-          <div key={i} style={{ fontSize: 12, fontWeight: 600, color: '#22d3ee', marginTop: 14, marginBottom: 6 }}>
-            {line.replace('### ', '')}
-          </div>
-        )
-      } else if (line.startsWith('## ')) {
-        elements.push(
-          <div key={i} style={{ fontSize: 13, fontWeight: 700, color: 'rgba(255,255,255,0.8)', marginTop: 16, marginBottom: 8 }}>
-            {line.replace('## ', '')}
-          </div>
-        )
-      } else if (line.startsWith('# ')) {
-        elements.push(
-          <div key={i} style={{
-            fontSize: 14, fontWeight: 700, marginBottom: 10,
-            background: 'linear-gradient(135deg, #22d3ee, #a78bfa)',
-            WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent'
-          }}>
-            {line.replace('# ', '')}
-          </div>
-        )
-      } else if (line.startsWith('- ')) {
-        elements.push(
-          <div key={i} style={{ fontSize: 11, color: 'rgba(255,255,255,0.55)', paddingLeft: 10, lineHeight: 1.7 }}>
-            {'• ' + line.slice(2)}
-          </div>
-        )
-      } else if (line.trim()) {
-        elements.push(
-          <div key={i} style={{ fontSize: 11, color: 'rgba(255,255,255,0.45)', lineHeight: 1.6 }}>
-            {line}
-          </div>
-        )
-      }
-    }
-    if (inTable) flushTable()
-    return elements
-  }
+  // Check if the content has date sections (## YYYY-MM-DD)
+  const hasDateSections = /^## \d{4}-\d{2}-\d{2}/m.test(content)
+  const dateSections = hasDateSections ? parseDateSections(content) : []
 
   return (
-    <div style={{ height: '100%', overflowY: 'auto', padding: '12px 16px' }}>
+    <div style={{ height: '100%', overflowY: 'auto', padding: `${spacing.md}px ${spacing.lg}px` }}>
       <div style={{
-        fontSize: 10, color: 'rgba(255,255,255,0.3)', marginBottom: 12,
-        fontWeight: 600, textTransform: 'uppercase', letterSpacing: 1.5
+        ...typography.overline, color: colors.text.tertiary, marginBottom: spacing.md
       }}>
         히스토리
       </div>
 
       {files.length === 0 ? (
-        <div style={{ textAlign: 'center', padding: 40, color: 'rgba(255,255,255,0.2)', fontSize: 12 }}>
+        <div style={{ textAlign: 'center', padding: 40, color: colors.text.tertiary, fontSize: 12 }}>
           메모리 기록이 없습니다
         </div>
       ) : (
@@ -143,19 +237,34 @@ export default function HistoryTab(): JSX.Element {
             {files.map((f) => (
               <button key={f.name} onClick={() => selectFile(f.name)}
                 style={{
-                  fontSize: 10, padding: '4px 10px', borderRadius: 16,
+                  fontSize: 10, padding: '4px 10px', borderRadius: radius.full,
                   background: selectedFile === f.name
-                    ? 'linear-gradient(135deg, rgba(34,211,238,0.2), rgba(167,139,250,0.2))'
-                    : 'rgba(255,255,255,0.04)',
-                  border: `1px solid ${selectedFile === f.name ? 'rgba(34,211,238,0.3)' : 'rgba(255,255,255,0.06)'}`,
-                  color: selectedFile === f.name ? '#22d3ee' : 'rgba(255,255,255,0.4)',
-                  cursor: 'pointer', fontWeight: 500, transition: 'all 0.2s'
+                    ? colors.accent.primaryMuted
+                    : colors.bg.card,
+                  border: `1px solid ${selectedFile === f.name ? colors.border.accent : colors.border.primary}`,
+                  color: selectedFile === f.name ? colors.accent.primary : colors.text.tertiary,
+                  cursor: 'pointer', fontWeight: 500, transition: transition.fast
                 }}>
                 {f.label}
               </button>
             ))}
           </div>
-          <div>{renderContent(content)}</div>
+
+          {hasDateSections ? (
+            // Date-grouped collapsible view
+            <div>
+              {dateSections.map((section, i) => (
+                <DateSectionCard
+                  key={section.title}
+                  section={section}
+                  defaultOpen={i === 0}
+                />
+              ))}
+            </div>
+          ) : (
+            // Flat render for non-date content
+            <div>{renderContent(content)}</div>
+          )}
         </>
       )}
     </div>

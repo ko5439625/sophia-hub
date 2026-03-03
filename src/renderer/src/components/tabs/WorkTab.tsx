@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react'
 import { useHubStore } from '../../store/useHubStore'
+import { colors, typography, spacing, radius, transition } from '../../styles/tokens'
+import { Keyboard, Lightbulb, ClipboardList, Zap, ChevronDown, RefreshCw, FolderOpen, Archive } from 'lucide-react'
 
-const CATEGORIES: Array<{ id: 'dev' | 'idea' | 'work' | 'more'; label: string; icon: string; color: string }> = [
-  { id: 'dev', label: '개발', icon: '⌨', color: '#60a5fa' },
-  { id: 'idea', label: '아이디어', icon: '💡', color: '#f59e0b' },
-  { id: 'work', label: '업무', icon: '📋', color: '#34d399' },
-  { id: 'more', label: '더보기', icon: '⚡', color: '#a78bfa' }
+const SKILL_CATEGORIES: Array<{ id: 'dev' | 'idea' | 'work' | 'more'; label: string; icon: React.ReactNode; color: string }> = [
+  { id: 'dev', label: '개발', icon: <Keyboard size={16} />, color: colors.accent.primary },
+  { id: 'idea', label: '아이디어', icon: <Lightbulb size={16} />, color: colors.status.warning },
+  { id: 'work', label: '업무', icon: <ClipboardList size={16} />, color: colors.status.success },
+  { id: 'more', label: '더보기', icon: <Zap size={16} />, color: colors.status.info }
 ]
 
 interface CmdItem { cmd: string; desc: string; usage: string }
@@ -14,7 +16,7 @@ const COMMAND_SECTIONS: Array<{
   id: string; title: string; icon: string; desc: string; color: string; commands: CmdItem[]
 }> = [
   {
-    id: 'slash', title: '슬래시 커맨드', icon: '/', desc: '인터랙티브 모드에서 사용', color: '#60a5fa',
+    id: 'slash', title: '슬래시 커맨드', icon: '/', desc: '인터랙티브 모드에서 사용', color: colors.accent.primary,
     commands: [
       { cmd: '/add-dir', desc: '작업 디렉토리 추가', usage: '현재 세션에 다른 폴더를 추가 참조. 멀티 프로젝트 동시 작업 시 유용' },
       { cmd: '/bug', desc: '버그 리포트', usage: 'Claude Code 자체의 버그를 Anthropic에 리포트' },
@@ -43,7 +45,7 @@ const COMMAND_SECTIONS: Array<{
     ]
   },
   {
-    id: 'cli', title: 'CLI 실행 옵션', icon: '>_', desc: '터미널에서 claude 실행 시 플래그', color: '#34d399',
+    id: 'cli', title: 'CLI 실행 옵션', icon: '>_', desc: '터미널에서 claude 실행 시 플래그', color: colors.status.success,
     commands: [
       { cmd: 'claude "프롬프트"', desc: '초기 프롬프트', usage: '인터랙티브 모드 시작 + 첫 메시지 자동 입력' },
       { cmd: '-p, --print', desc: '비인터랙티브', usage: '결과만 출력하고 종료. 스크립트/CI에서 활용' },
@@ -68,7 +70,7 @@ const COMMAND_SECTIONS: Array<{
     ]
   },
   {
-    id: 'keys', title: '키보드 단축키', icon: '⌨', desc: '인터랙티브 모드 단축키', color: '#f59e0b',
+    id: 'keys', title: '키보드 단축키', icon: '⌨', desc: '인터랙티브 모드 단축키', color: colors.status.warning,
     commands: [
       { cmd: 'Ctrl+C', desc: '응답 중단', usage: 'Claude 응답 중 즉시 중단. 입력 중이면 내용 초기화' },
       { cmd: 'Ctrl+D', desc: '세션 종료', usage: 'Claude Code 세션 완전 종료' },
@@ -82,54 +84,60 @@ const COMMAND_SECTIONS: Array<{
   }
 ]
 
-const PRIORITY_ICONS: Record<string, string> = {
-  Highest: '🔴', High: '🔴', Medium: '🟡', Low: '🟢', Lowest: '🟢'
+const priorityDot = (color: string): React.ReactNode => (
+  <div style={{ width: 8, height: 8, borderRadius: '50%', background: color, flexShrink: 0 }} />
+)
+const PRIORITY_ICONS: Record<string, React.ReactNode> = {
+  Highest: priorityDot(colors.status.error), High: priorityDot(colors.status.error),
+  Medium: priorityDot(colors.status.warning),
+  Low: priorityDot(colors.status.success), Lowest: priorityDot(colors.status.success)
 }
 const STATUS_COLORS: Record<string, string> = {
-  new: '#60a5fa', indeterminate: '#f59e0b', done: '#34d399'
+  new: colors.accent.primary, indeterminate: colors.status.warning, done: colors.status.success
 }
 
 // Shared styles
 const sectionLabel: React.CSSProperties = {
-  fontSize: 10, color: 'rgba(255,255,255,0.3)', marginBottom: 8,
-  fontWeight: 600, textTransform: 'uppercase', letterSpacing: 1.5
+  ...typography.overline,
+  color: colors.text.tertiary,
+  marginBottom: spacing.sm
 }
 
 const glassCard = (hover = false): React.CSSProperties => ({
-  padding: '10px 12px', borderRadius: 10,
-  background: hover ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.03)',
-  border: '1px solid rgba(255,255,255,0.06)',
-  transition: 'all 0.2s ease'
+  padding: `${spacing.md}px`, borderRadius: radius.md,
+  background: hover ? colors.bg.cardHover : colors.bg.elevated,
+  border: `1px solid ${colors.border.primary}`,
+  transition: transition.fast
 })
 
 // --- Collapsible Section ---
 function CollapsibleSection({ title, icon, color, defaultOpen, badge, onRefresh, children }: {
-  title: string; icon: string; color: string; defaultOpen: boolean
+  title: string; icon: React.ReactNode; color: string; defaultOpen: boolean
   badge?: string; onRefresh?: () => void; children: React.ReactNode
 }): JSX.Element {
   const [open, setOpen] = useState(defaultOpen)
   return (
     <div style={{
-      marginBottom: 14, borderRadius: 12, overflow: 'hidden',
-      border: `1px solid ${open ? color + '25' : 'rgba(255,255,255,0.06)'}`,
-      transition: 'border-color 0.2s ease'
+      marginBottom: 14, borderRadius: radius.lg, overflow: 'hidden',
+      border: `1px solid ${open ? color + '25' : colors.border.primary}`,
+      transition: transition.fast
     }}>
       <button onClick={() => setOpen(!open)} style={{
         width: '100%', textAlign: 'left', padding: '11px 14px',
-        background: `linear-gradient(135deg, ${color}10, ${color}06)`,
+        background: open ? `${color}08` : colors.bg.elevated,
         borderBottom: open ? `1px solid ${color}18` : 'none',
         border: 'none',
         cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        transition: 'all 0.2s ease'
+        transition: transition.fast
       }}
-        onMouseEnter={(e) => { e.currentTarget.style.background = `linear-gradient(135deg, ${color}18, ${color}0c)` }}
-        onMouseLeave={(e) => { e.currentTarget.style.background = `linear-gradient(135deg, ${color}10, ${color}06)` }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ fontSize: 14 }}>{icon}</span>
-          <span style={{ fontSize: 13, fontWeight: 700, color }}>{title}</span>
+        onMouseEnter={(e) => { e.currentTarget.style.background = `${color}12` }}
+        onMouseLeave={(e) => { e.currentTarget.style.background = open ? `${color}08` : colors.bg.elevated }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: spacing.sm }}>
+          <span style={{ display: 'flex', alignItems: 'center', color }}>{icon}</span>
+          <span style={{ ...typography.subtitle, color }}>{title}</span>
           {badge && (
             <span style={{
-              fontSize: 9, padding: '1px 7px', borderRadius: 10,
+              fontSize: 9, padding: '1px 7px', borderRadius: radius.md,
               background: `${color}20`, color, fontWeight: 600
             }}>{badge}</span>
           )}
@@ -138,22 +146,22 @@ function CollapsibleSection({ title, icon, color, defaultOpen, badge, onRefresh,
           {onRefresh && open && (
             <span onClick={(e) => { e.stopPropagation(); onRefresh() }}
               style={{
-                fontSize: 12, cursor: 'pointer', color: 'rgba(255,255,255,0.25)',
-                padding: '2px 4px', transition: 'color 0.2s'
+                cursor: 'pointer', color: colors.text.tertiary,
+                padding: '2px 4px', transition: transition.fast, display: 'flex', alignItems: 'center'
               }}
               onMouseEnter={(e) => { e.currentTarget.style.color = color }}
-              onMouseLeave={(e) => { e.currentTarget.style.color = 'rgba(255,255,255,0.25)' }}
+              onMouseLeave={(e) => { e.currentTarget.style.color = colors.text.tertiary }}
               title="새로고침">
-              ↻
+              <RefreshCw size={12} />
             </span>
           )}
           <span style={{
-            fontSize: 10, color: 'rgba(255,255,255,0.2)', transition: 'transform 0.2s ease',
-            transform: open ? 'rotate(180deg)' : 'rotate(0deg)'
-          }}>▼</span>
+            color: colors.text.tertiary, transition: transition.fast,
+            transform: open ? 'rotate(180deg)' : 'rotate(0deg)', display: 'flex'
+          }}><ChevronDown size={12} /></span>
         </div>
       </button>
-      {open && <div style={{ padding: '10px 12px' }}>{children}</div>}
+      {open && <div style={{ padding: `${spacing.md}px` }}>{children}</div>}
     </div>
   )
 }
@@ -164,6 +172,7 @@ function JiraSection({ refreshKey }: { refreshKey: number }): JSX.Element {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [configured, setConfigured] = useState(false)
+  const [jiraBaseUrl, setJiraBaseUrl] = useState('')
 
   useEffect(() => {
     const load = async (): Promise<void> => {
@@ -175,6 +184,7 @@ function JiraSection({ refreshKey }: { refreshKey: number }): JSX.Element {
           return
         }
         setConfigured(true)
+        setJiraBaseUrl(jira.baseUrl.replace(/\/+$/, ''))
         setLoading(true)
         setError(null)
 
@@ -193,10 +203,10 @@ function JiraSection({ refreshKey }: { refreshKey: number }): JSX.Element {
   if (!configured) {
     return (
       <div style={{
-        textAlign: 'center', padding: '20px 12px', color: 'rgba(255,255,255,0.2)', fontSize: 11
+        textAlign: 'center', padding: '20px 12px', color: colors.text.tertiary, ...typography.caption
       }}>
         Jira 연동이 설정되지 않았습니다
-        <div style={{ fontSize: 10, marginTop: 4, color: 'rgba(255,255,255,0.12)' }}>
+        <div style={{ fontSize: 10, marginTop: spacing.xs, color: colors.text.tertiary }}>
           ··· → API 설정에서 Jira 정보를 입력하세요
         </div>
       </div>
@@ -205,7 +215,7 @@ function JiraSection({ refreshKey }: { refreshKey: number }): JSX.Element {
 
   if (loading) {
     return (
-      <div style={{ textAlign: 'center', padding: 20, color: 'rgba(255,255,255,0.3)', fontSize: 11 }}>
+      <div style={{ textAlign: 'center', padding: 20, color: colors.text.tertiary, ...typography.caption }}>
         이슈 로딩 중...
       </div>
     )
@@ -214,9 +224,9 @@ function JiraSection({ refreshKey }: { refreshKey: number }): JSX.Element {
   if (error) {
     return (
       <div style={{
-        padding: 12, borderRadius: 8,
-        background: 'rgba(248,113,113,0.06)', border: '1px solid rgba(248,113,113,0.15)',
-        fontSize: 11, color: '#f87171'
+        padding: spacing.md, borderRadius: radius.sm,
+        background: colors.status.errorMuted, border: `1px solid ${colors.status.error}25`,
+        ...typography.caption, color: colors.status.error
       }}>
         {error}
       </div>
@@ -225,31 +235,38 @@ function JiraSection({ refreshKey }: { refreshKey: number }): JSX.Element {
 
   if (issues.length === 0) {
     return (
-      <div style={{ textAlign: 'center', padding: 20, color: 'rgba(255,255,255,0.2)', fontSize: 11 }}>
+      <div style={{ textAlign: 'center', padding: 20, color: colors.text.tertiary, ...typography.caption }}>
         할당된 이슈가 없습니다
       </div>
     )
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: spacing.xs }}>
       {issues.map((issue) => (
-        <div key={issue.key} style={{
-          padding: '8px 12px', borderRadius: 8,
-          background: 'rgba(255,255,255,0.03)',
-          border: '1px solid rgba(255,255,255,0.06)',
-          display: 'flex', alignItems: 'center', gap: 8
-        }}>
-          <span style={{ fontSize: 12, flexShrink: 0 }}>
-            {PRIORITY_ICONS[issue.priority] || '⚪'}
+        <div key={issue.key}
+          onClick={() => jiraBaseUrl && window.api.openUrl(`${jiraBaseUrl}/browse/${issue.key}`)}
+          style={{
+            padding: '8px 12px', borderRadius: radius.sm,
+            background: colors.bg.elevated,
+            border: `1px solid ${colors.border.primary}`,
+            display: 'flex', alignItems: 'center', gap: spacing.sm,
+            cursor: jiraBaseUrl ? 'pointer' : 'default',
+            transition: transition.fast
+          }}
+          onMouseEnter={(e) => { e.currentTarget.style.background = colors.bg.cardHover; e.currentTarget.style.borderColor = '#FF9F0A30' }}
+          onMouseLeave={(e) => { e.currentTarget.style.background = colors.bg.elevated; e.currentTarget.style.borderColor = colors.border.primary }}
+        >
+          <span style={{ display: 'flex', flexShrink: 0 }}>
+            {PRIORITY_ICONS[issue.priority] || priorityDot(colors.text.tertiary)}
           </span>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <span style={{ fontSize: 10, color: '#60a5fa', fontWeight: 600, fontFamily: 'Consolas, monospace', flexShrink: 0 }}>
+              <span style={{ fontSize: 10, color: '#FF9F0A', fontWeight: 600, fontFamily: 'Consolas, monospace', flexShrink: 0 }}>
                 {issue.key}
               </span>
               <span style={{
-                fontSize: 11, color: 'rgba(255,255,255,0.7)',
+                ...typography.caption, color: colors.text.secondary,
                 overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'
               }}>
                 {issue.summary}
@@ -257,9 +274,9 @@ function JiraSection({ refreshKey }: { refreshKey: number }): JSX.Element {
             </div>
           </div>
           <span style={{
-            fontSize: 9, padding: '2px 8px', borderRadius: 10, flexShrink: 0,
-            background: `${STATUS_COLORS[issue.statusCategory] || '#60a5fa'}18`,
-            color: STATUS_COLORS[issue.statusCategory] || '#60a5fa',
+            fontSize: 9, padding: '2px 8px', borderRadius: radius.md, flexShrink: 0,
+            background: `${STATUS_COLORS[issue.statusCategory] || colors.accent.primary}18`,
+            color: STATUS_COLORS[issue.statusCategory] || colors.accent.primary,
             fontWeight: 600
           }}>
             {issue.status}
@@ -267,11 +284,255 @@ function JiraSection({ refreshKey }: { refreshKey: number }): JSX.Element {
         </div>
       ))}
       <div style={{
-        textAlign: 'center', fontSize: 9, color: 'rgba(255,255,255,0.15)', marginTop: 4
+        textAlign: 'center', fontSize: 9, color: colors.text.tertiary, marginTop: spacing.xs
       }}>
         {issues.length}건 표시
       </div>
     </div>
+  )
+}
+
+type Goal = { id: string; text: string; done: boolean; weekStart: number }
+
+function getWeekStart(): number {
+  const d = new Date()
+  d.setHours(0, 0, 0, 0)
+  d.setDate(d.getDate() - d.getDay())
+  return d.getTime()
+}
+
+// --- Goals Strip (synced with HomeTab) ---
+function GoalsStrip(): JSX.Element | null {
+  const [goals, setGoals] = useState<Goal[]>([])
+
+  useEffect(() => {
+    const weekStart = getWeekStart()
+    window.api.getStore('goals').then((data) => {
+      if (!Array.isArray(data)) return
+      setGoals((data as Goal[]).filter((g) => g.weekStart >= weekStart))
+    })
+  }, [])
+
+  const toggleGoal = (id: string): void => {
+    const updated = goals.map((g) => g.id === id ? { ...g, done: !g.done } : g)
+    setGoals(updated)
+    window.api.setStore('goals', updated)
+  }
+
+  if (goals.length === 0) return null
+
+  const doneCount = goals.filter((g) => g.done).length
+  const allDone = doneCount === goals.length
+  const progressColor = allDone ? colors.status.success : '#FFD60A'
+
+  return (
+    <div style={{
+      marginBottom: spacing.md, padding: `${spacing.md}px`,
+      borderRadius: radius.lg, border: `1px solid ${progressColor}25`,
+      background: `${progressColor}06`
+    }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.sm }}>
+        <span style={{ fontSize: 12, fontWeight: 700, color: progressColor, letterSpacing: 0.3 }}>
+          주간 목표
+        </span>
+        <span style={{
+          fontSize: 11, fontWeight: 600, color: progressColor,
+          background: `${progressColor}18`, padding: '2px 8px', borderRadius: radius.full
+        }}>
+          {doneCount}/{goals.length}
+        </span>
+      </div>
+      <div style={{
+        height: 5, borderRadius: 3, background: `${progressColor}15`,
+        overflow: 'hidden', marginBottom: spacing.sm
+      }}>
+        <div style={{
+          height: '100%', borderRadius: 3,
+          width: `${(doneCount / goals.length) * 100}%`,
+          background: progressColor,
+          transition: 'width 0.3s'
+        }} />
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+        {goals.map((goal) => (
+          <div key={goal.id} style={{
+            display: 'flex', alignItems: 'center', gap: spacing.sm,
+            padding: `${spacing.xs + 2}px ${spacing.sm}px`, borderRadius: radius.sm,
+            background: 'rgba(255,255,255,0.03)',
+            border: `1px solid ${colors.border.subtle}`
+          }}>
+            <button onClick={() => toggleGoal(goal.id)}
+              style={{
+                width: 15, height: 15, borderRadius: 4, border: 'none',
+                background: goal.done ? progressColor : colors.bg.input,
+                cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: 9, color: 'white', flexShrink: 0,
+                transition: transition.fast
+              }}>
+              {goal.done ? '✓' : ''}
+            </button>
+            <span style={{
+              flex: 1, fontSize: 12, fontWeight: goal.done ? 400 : 500,
+              color: goal.done ? colors.text.tertiary : colors.text.primary,
+              textDecoration: goal.done ? 'line-through' : 'none'
+            }}>
+              {goal.text}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// --- Backlog Item (hover to show planning summary) ---
+function BacklogItem({ block, index }: { block: string; index: number }): JSX.Element {
+  const [hovered, setHovered] = useState(false)
+  const lines = block.split('\n').filter(Boolean)
+  const titleLine = lines.find((l) => l.startsWith('###'))?.replace(/^###\s*/, '') || `아이디어 ${index + 1}`
+  const statusMatch = titleLine.match(/\[(.+?)\]/)
+  const status = statusMatch ? statusMatch[1] : ''
+  const title = titleLine.replace(/\s*\[.+?\]\s*$/, '')
+
+  const getField = (key: string): string => {
+    const line = lines.find((l) => l.match(new RegExp(`^-\\s*${key}:\\s*`)))
+    return line ? line.replace(new RegExp(`^-\\s*${key}:\\s*`), '').trim() : ''
+  }
+
+  const desc = getField('설명')
+  const difficulty = getField('난이도')
+  const stack = getField('기술 스택')
+
+  // Extract detail sections
+  const details: string[] = []
+  let capturing = false
+  let current = ''
+  for (const line of lines) {
+    if (line.match(/^\*\*.+\*\*:/)) {
+      if (capturing && current) details.push(current.trim())
+      current = line.replace(/\*\*/g, '')
+      capturing = true
+    } else if (capturing && (line.startsWith('-') || line.match(/^\d+\./))) {
+      current += '\n' + line
+    } else if (capturing && line.trim() === '') {
+      if (current) details.push(current.trim())
+      current = ''
+      capturing = false
+    }
+  }
+  if (capturing && current) details.push(current.trim())
+
+  const STATUS_COLORS: Record<string, string> = {
+    '대기': colors.status.warning, '진행중': colors.accent.primary,
+    '완료': colors.status.success, '보류': colors.text.tertiary
+  }
+  const statusColor = STATUS_COLORS[status] || colors.text.tertiary
+
+  return (
+    <div onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
+      style={{
+        padding: '10px 12px', borderRadius: radius.sm,
+        background: hovered ? colors.bg.cardHover : colors.bg.elevated,
+        border: `1px solid ${hovered ? statusColor + '40' : colors.border.primary}`,
+        transition: transition.fast
+      }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <span style={{ fontSize: 12, fontWeight: 600, color: colors.text.primary }}>{title}</span>
+        {status && (
+          <span style={{
+            fontSize: 9, padding: '2px 8px', borderRadius: radius.full,
+            background: `${statusColor}18`, color: statusColor, fontWeight: 600
+          }}>{status}</span>
+        )}
+      </div>
+      {desc && <div style={{ fontSize: 11, color: colors.text.secondary, marginTop: 3 }}>{desc}</div>}
+      <div style={{ display: 'flex', gap: spacing.sm, marginTop: 3 }}>
+        {difficulty && <span style={{ fontSize: 9, color: colors.text.tertiary }}>{difficulty}</span>}
+        {stack && <span style={{ fontSize: 9, color: colors.text.tertiary }}>{stack}</span>}
+      </div>
+      {hovered && details.length > 0 && (
+        <div style={{ marginTop: spacing.sm, paddingTop: spacing.sm, borderTop: `1px solid ${colors.border.primary}` }}>
+          <div style={{ fontSize: 9, fontWeight: 600, color: statusColor, marginBottom: 4, textTransform: 'uppercase', letterSpacing: 1 }}>기획 요약</div>
+          {details.map((section, si) => {
+            const sLines = section.split('\n')
+            return (
+              <div key={si} style={{ marginBottom: 4 }}>
+                <div style={{ fontSize: 10, fontWeight: 600, color: colors.text.secondary }}>{sLines[0]}</div>
+                {sLines.slice(1).map((item, ii) => (
+                  <div key={ii} style={{ fontSize: 10, color: colors.text.tertiary, lineHeight: 1.5, paddingLeft: 8 }}>{item.trim()}</div>
+                ))}
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// --- Backlog Section ---
+function BacklogSection(): JSX.Element {
+  const [ideas, setIdeas] = useState<string[]>([])
+
+  useEffect(() => {
+    window.api.getIdeaFiles().then((files) => {
+      if (files.length === 0) return
+      // Load latest month file
+      window.api.getIdeaContent(files[0].name).then((content) => {
+        setIdeas(content.split('---').map((s) => s.trim()).filter(Boolean))
+      })
+    })
+  }, [])
+
+  return (
+    <CollapsibleSection title="백로그" icon={<Archive size={14} />} color={colors.text.tertiary} defaultOpen={false}
+      badge={ideas.length > 0 ? `${ideas.length}` : undefined}>
+      {ideas.length === 0 ? (
+        <div style={{ textAlign: 'center', padding: 16, color: colors.text.tertiary, fontSize: 11 }}>
+          채택된 아이디어가 없습니다
+          <div style={{ fontSize: 10, marginTop: 4 }}>/아이디어에서 채택하면 여기에 쌓여요</div>
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: spacing.xs }}>
+          {ideas.map((block, i) => <BacklogItem key={i} block={block} index={i} />)}
+        </div>
+      )}
+    </CollapsibleSection>
+  )
+}
+
+// --- Skill Item (hover to show description) ---
+function SkillItem({ skill, onLaunch }: { skill: Skill; onLaunch: () => void }): JSX.Element {
+  const [hovered, setHovered] = useState(false)
+  return (
+    <button onClick={onLaunch}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{
+        textAlign: 'left', padding: '10px 14px', borderRadius: radius.md,
+        background: hovered ? colors.bg.cardHover : colors.bg.elevated,
+        border: `1px solid ${hovered ? '#FF648240' : colors.border.primary}`,
+        cursor: 'pointer', transition: transition.fast, width: '100%'
+      }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <span style={{ fontSize: 13, fontWeight: 600, color: colors.text.primary }}>/{skill.name}</span>
+        <span style={{
+          fontSize: 9, padding: '3px 10px', borderRadius: radius.sm,
+          background: 'rgba(255,100,130,0.15)',
+          color: '#FF6482', fontWeight: 600, letterSpacing: 0.5
+        }}>
+          실행
+        </span>
+      </div>
+      {hovered && (
+        <p style={{
+          ...typography.caption, color: colors.text.secondary, marginTop: spacing.xs,
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'
+        }}>
+          {skill.description}
+        </p>
+      )}
+    </button>
   )
 }
 
@@ -299,50 +560,20 @@ export default function WorkTab(): JSX.Element {
   // Skill drill-down view
   if (selectedCategory) {
     return (
-      <div style={{ height: '100%', overflowY: 'auto', padding: '12px 16px' }}>
+      <div style={{ height: '100%', overflowY: 'auto', padding: `${spacing.md}px ${spacing.lg}px` }}>
         <button onClick={() => setSelectedCategory(null)}
           style={{
-            fontSize: 11, color: 'rgba(255,255,255,0.35)', background: 'none',
+            ...typography.caption, color: colors.text.tertiary, background: 'none',
             border: 'none', cursor: 'pointer', marginBottom: 10, padding: '2px 4px',
-            transition: 'color 0.15s'
+            transition: transition.fast
           }}
-          onMouseEnter={(e) => { e.currentTarget.style.color = 'rgba(255,255,255,0.6)' }}
-          onMouseLeave={(e) => { e.currentTarget.style.color = 'rgba(255,255,255,0.35)' }}>
+          onMouseEnter={(e) => { e.currentTarget.style.color = colors.text.secondary }}
+          onMouseLeave={(e) => { e.currentTarget.style.color = colors.text.tertiary }}>
           ← 뒤로
         </button>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           {filteredSkills.map((skill) => (
-            <button key={skill.name} onClick={() => launchSkill(skill.name, skill.projectPath)}
-              style={{
-                textAlign: 'left', padding: 12, borderRadius: 10,
-                background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)',
-                cursor: 'pointer', transition: 'all 0.2s ease'
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.background = 'rgba(255,255,255,0.06)'
-                e.currentTarget.style.borderColor = 'rgba(167,139,250,0.2)'
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.background = 'rgba(255,255,255,0.03)'
-                e.currentTarget.style.borderColor = 'rgba(255,255,255,0.06)'
-              }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span style={{ fontSize: 13, fontWeight: 500 }}>/{skill.name}</span>
-                <span style={{
-                  fontSize: 9, padding: '3px 10px', borderRadius: 6,
-                  background: 'linear-gradient(135deg, rgba(167,139,250,0.2), rgba(96,165,250,0.2))',
-                  color: '#c4b5fd', fontWeight: 600, letterSpacing: 0.5
-                }}>
-                  실행
-                </span>
-              </div>
-              <p style={{ fontSize: 11, color: 'rgba(255,255,255,0.45)', marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {skill.description}
-              </p>
-              {skill.techStack && (
-                <p style={{ fontSize: 10, color: 'rgba(255,255,255,0.2)', marginTop: 2 }}>{skill.techStack}</p>
-              )}
-            </button>
+            <SkillItem key={skill.name} skill={skill} onLaunch={() => launchSkill(skill.name, skill.projectPath)} />
           ))}
         </div>
       </div>
@@ -350,19 +581,66 @@ export default function WorkTab(): JSX.Element {
   }
 
   return (
-    <div style={{ height: '100%', overflowY: 'auto', padding: '12px 16px' }}>
+    <div style={{ height: '100%', overflowY: 'auto', padding: `${spacing.md}px ${spacing.lg}px` }}>
 
-      {/* ▾ Jira 이슈 섹션 (위에 배치) */}
-      <CollapsibleSection title="Jira 이슈" icon="🔵" color="#60a5fa" defaultOpen={false}
+      {/* 주간 목표 */}
+      <GoalsStrip />
+
+      {/* Jira 이슈 섹션 */}
+      <CollapsibleSection
+        title="Jira 이슈"
+        icon={<div style={{ width: 8, height: 8, borderRadius: '50%', background: '#FF9F0A' }} />}
+        color={'#FF9F0A'} defaultOpen={false}
         onRefresh={() => setJiraRefreshKey((k) => k + 1)}>
         <JiraSection refreshKey={jiraRefreshKey} />
       </CollapsibleSection>
 
-      {/* ▾ 스킬 섹션 */}
-      <CollapsibleSection title="스킬" icon="⚡" color="#a78bfa" defaultOpen={false}>
+      {/* 프로젝트 섹션 */}
+      <CollapsibleSection title="프로젝트" icon={<FolderOpen size={14} />} color={'#BF5AF2'} defaultOpen={false}
+        badge={`${skills.filter((s) => s.category === 'project').length}`}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: spacing.xs }}>
+          {skills.filter((s) => s.category === 'project').map((skill) => (
+            <button key={skill.name} onClick={() => launchSkill(skill.name, skill.projectPath)}
+              style={{
+                textAlign: 'left', padding: '10px 12px', borderRadius: radius.sm,
+                background: colors.bg.elevated,
+                border: `1px solid ${colors.border.primary}`,
+                cursor: 'pointer', transition: transition.fast, width: '100%'
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = colors.bg.cardHover
+                e.currentTarget.style.borderColor = '#BF5AF230'
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = colors.bg.elevated
+                e.currentTarget.style.borderColor = colors.border.primary
+              }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ ...typography.body, fontWeight: 500 }}>/{skill.name}</span>
+                <span style={{
+                  fontSize: 9, padding: '3px 10px', borderRadius: radius.sm,
+                  background: 'rgba(191,90,242,0.15)',
+                  color: '#BF5AF2', fontWeight: 600
+                }}>
+                  실행
+                </span>
+              </div>
+              <p style={{ ...typography.caption, color: colors.text.tertiary, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {skill.description}
+              </p>
+              {skill.techStack && (
+                <p style={{ fontSize: 10, color: colors.text.tertiary, marginTop: 2 }}>{skill.techStack}</p>
+              )}
+            </button>
+          ))}
+        </div>
+      </CollapsibleSection>
+
+      {/* 스킬 섹션 */}
+      <CollapsibleSection title="스킬" icon={<Zap size={14} />} color={'#FF6482'} defaultOpen={false}>
         {/* 최근 사용 */}
         {recentSkills.length > 0 && (
-          <div style={{ marginBottom: 12 }}>
+          <div style={{ marginBottom: spacing.md }}>
             <div style={sectionLabel}>최근 사용</div>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
               {recentSkills.map((name) => {
@@ -371,13 +649,13 @@ export default function WorkTab(): JSX.Element {
                 return (
                   <button key={name} onClick={() => launchSkill(skill.name, skill.projectPath)}
                     style={{
-                      fontSize: 11, padding: '5px 14px', borderRadius: 20,
-                      background: 'linear-gradient(135deg, rgba(167,139,250,0.1), rgba(96,165,250,0.1))',
-                      border: '1px solid rgba(167,139,250,0.2)', color: '#c4b5fd',
-                      cursor: 'pointer', fontWeight: 500, transition: 'all 0.2s ease'
+                      fontSize: 11, padding: '5px 14px', borderRadius: radius.full,
+                      background: colors.accent.primarySubtle,
+                      border: `1px solid ${colors.accent.primary}30`, color: colors.accent.primary,
+                      cursor: 'pointer', fontWeight: 500, transition: transition.fast
                     }}
-                    onMouseEnter={(e) => { e.currentTarget.style.background = 'linear-gradient(135deg, rgba(167,139,250,0.2), rgba(96,165,250,0.2))' }}
-                    onMouseLeave={(e) => { e.currentTarget.style.background = 'linear-gradient(135deg, rgba(167,139,250,0.1), rgba(96,165,250,0.1))' }}>
+                    onMouseEnter={(e) => { e.currentTarget.style.background = colors.accent.primaryMuted }}
+                    onMouseLeave={(e) => { e.currentTarget.style.background = colors.accent.primarySubtle }}>
                     /{name}
                   </button>
                 )
@@ -388,30 +666,30 @@ export default function WorkTab(): JSX.Element {
 
         {/* 카테고리 그리드 */}
         <div style={sectionLabel}>커스텀 스킬</div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 16 }}>
-          {CATEGORIES.map((cat) => {
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: spacing.sm, marginBottom: spacing.lg }}>
+          {SKILL_CATEGORIES.map((cat) => {
             const count = skills.filter((s) => s.category === cat.id).length
             return (
               <button key={cat.id} onClick={() => setSelectedCategory(cat.id)}
                 style={{
-                  padding: '14px 12px', borderRadius: 12,
+                  padding: '14px 12px', borderRadius: radius.lg,
                   border: `1px solid ${cat.color}22`,
-                  background: `linear-gradient(135deg, ${cat.color}08, ${cat.color}04)`,
-                  cursor: 'pointer', textAlign: 'left', transition: 'all 0.2s ease'
+                  background: `${cat.color}08`,
+                  cursor: 'pointer', textAlign: 'left', transition: transition.fast
                 }}
                 onMouseEnter={(e) => {
-                  e.currentTarget.style.background = `linear-gradient(135deg, ${cat.color}18, ${cat.color}10)`
+                  e.currentTarget.style.background = `${cat.color}18`
                   e.currentTarget.style.borderColor = `${cat.color}40`
                 }}
                 onMouseLeave={(e) => {
-                  e.currentTarget.style.background = `linear-gradient(135deg, ${cat.color}08, ${cat.color}04)`
+                  e.currentTarget.style.background = `${cat.color}08`
                   e.currentTarget.style.borderColor = `${cat.color}22`
                 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-                  <span style={{ fontSize: 16 }}>{cat.icon}</span>
-                  <span style={{ fontSize: 13, fontWeight: 600, color: cat.color }}>{cat.label}</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.xs }}>
+                  <span style={{ display: 'flex', alignItems: 'center', color: cat.color }}>{cat.icon}</span>
+                  <span style={{ ...typography.subtitle, color: cat.color }}>{cat.label}</span>
                 </div>
-                <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)' }}>{count}개 스킬</span>
+                <span style={{ fontSize: 10, color: colors.text.tertiary }}>{count}개 스킬</span>
               </button>
             )
           })}
@@ -426,22 +704,22 @@ export default function WorkTab(): JSX.Element {
               <div key={section.id}>
                 <button onClick={() => toggleSection(section.id)}
                   style={{
-                    width: '100%', textAlign: 'left', padding: '10px 12px', borderRadius: 10,
+                    width: '100%', textAlign: 'left', padding: '10px 12px', borderRadius: radius.md,
                     background: isOpen
-                      ? `linear-gradient(135deg, ${section.color}12, ${section.color}08)`
-                      : 'rgba(255,255,255,0.02)',
-                    border: `1px solid ${isOpen ? section.color + '30' : 'rgba(255,255,255,0.05)'}`,
-                    cursor: 'pointer', transition: 'all 0.2s ease',
+                      ? `${section.color}0A`
+                      : colors.bg.elevated,
+                    border: `1px solid ${isOpen ? section.color + '30' : colors.border.subtle}`,
+                    cursor: 'pointer', transition: transition.fast,
                     display: 'flex', justifyContent: 'space-between', alignItems: 'center'
                   }}
                   onMouseEnter={(e) => {
-                    if (!isOpen) e.currentTarget.style.background = 'rgba(255,255,255,0.04)'
+                    if (!isOpen) e.currentTarget.style.background = colors.bg.card
                   }}
                   onMouseLeave={(e) => {
-                    if (!isOpen) e.currentTarget.style.background = 'rgba(255,255,255,0.02)'
+                    if (!isOpen) e.currentTarget.style.background = colors.bg.elevated
                   }}>
                   <div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: spacing.sm }}>
                       <code style={{
                         fontSize: 12, color: section.color, fontWeight: 700,
                         fontFamily: 'Consolas, monospace',
@@ -449,59 +727,59 @@ export default function WorkTab(): JSX.Element {
                       }}>
                         {section.icon}
                       </code>
-                      <span style={{ fontSize: 12, fontWeight: 600, color: 'rgba(255,255,255,0.85)' }}>
+                      <span style={{ fontSize: 12, fontWeight: 600, color: colors.text.primary }}>
                         {section.title}
                       </span>
                       <span style={{
-                        fontSize: 9, color: 'rgba(255,255,255,0.25)',
-                        background: 'rgba(255,255,255,0.05)', padding: '1px 5px', borderRadius: 3
+                        fontSize: 9, color: colors.text.tertiary,
+                        background: colors.bg.card, padding: '1px 5px', borderRadius: 3
                       }}>
                         {section.commands.length}
                       </span>
                     </div>
-                    <p style={{ fontSize: 10, color: 'rgba(255,255,255,0.25)', marginTop: 2 }}>{section.desc}</p>
+                    <p style={{ fontSize: 10, color: colors.text.tertiary, marginTop: 2 }}>{section.desc}</p>
                   </div>
                   <span style={{
-                    fontSize: 10, color: 'rgba(255,255,255,0.2)', transition: 'transform 0.2s ease',
-                    transform: isOpen ? 'rotate(180deg)' : 'rotate(0deg)'
+                    color: colors.text.tertiary, transition: transition.fast,
+                    transform: isOpen ? 'rotate(180deg)' : 'rotate(0deg)', display: 'flex'
                   }}>
-                    ▼
+                    <ChevronDown size={12} />
                   </span>
                 </button>
 
                 {isOpen && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginTop: 4, marginBottom: 8 }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginTop: spacing.xs, marginBottom: spacing.sm }}>
                     {section.commands.map((c) => (
                       <button key={c.cmd} onClick={() => copyCommand(c.cmd)}
                         style={{
                           ...glassCard(copiedCmd === c.cmd),
                           cursor: 'pointer', textAlign: 'left', width: '100%',
-                          position: 'relative', transition: 'all 0.15s ease'
+                          position: 'relative', transition: transition.fast
                         }}
                         onMouseEnter={(e) => {
-                          e.currentTarget.style.background = 'rgba(255,255,255,0.06)'
+                          e.currentTarget.style.background = colors.bg.cardHover
                           e.currentTarget.style.borderColor = `${section.color}25`
                         }}
                         onMouseLeave={(e) => {
-                          e.currentTarget.style.background = copiedCmd === c.cmd ? 'rgba(52,211,153,0.08)' : 'rgba(255,255,255,0.03)'
-                          e.currentTarget.style.borderColor = copiedCmd === c.cmd ? 'rgba(52,211,153,0.2)' : 'rgba(255,255,255,0.06)'
+                          e.currentTarget.style.background = copiedCmd === c.cmd ? colors.status.successMuted : colors.bg.elevated
+                          e.currentTarget.style.borderColor = copiedCmd === c.cmd ? `${colors.status.success}30` : colors.border.primary
                         }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: spacing.sm }}>
                           <code style={{
-                            fontSize: 10.5, color: copiedCmd === c.cmd ? '#34d399' : section.color, fontWeight: 600,
+                            fontSize: 10.5, color: copiedCmd === c.cmd ? colors.status.success : section.color, fontWeight: 600,
                             fontFamily: 'Consolas, monospace', flexShrink: 0,
-                            transition: 'color 0.15s'
+                            transition: transition.fast
                           }}>
                             {c.cmd}
                           </code>
-                          <span style={{ fontSize: 10.5, color: 'rgba(255,255,255,0.55)', flex: 1 }}>{c.desc}</span>
+                          <span style={{ fontSize: 10.5, color: colors.text.secondary, flex: 1 }}>{c.desc}</span>
                           {copiedCmd === c.cmd ? (
-                            <span style={{ fontSize: 9, color: '#34d399', flexShrink: 0, fontWeight: 600 }}>복사됨!</span>
+                            <span style={{ fontSize: 9, color: colors.status.success, flexShrink: 0, fontWeight: 600 }}>복사됨!</span>
                           ) : (
-                            <span style={{ fontSize: 9, color: 'rgba(255,255,255,0.15)', flexShrink: 0 }}>복사</span>
+                            <span style={{ fontSize: 9, color: colors.text.tertiary, flexShrink: 0 }}>복사</span>
                           )}
                         </div>
-                        <p style={{ fontSize: 9.5, color: 'rgba(255,255,255,0.25)', marginTop: 2, lineHeight: 1.4 }}>
+                        <p style={{ fontSize: 9.5, color: colors.text.tertiary, marginTop: 2, lineHeight: 1.4 }}>
                           {c.usage}
                         </p>
                       </button>
@@ -513,6 +791,9 @@ export default function WorkTab(): JSX.Element {
           })}
         </div>
       </CollapsibleSection>
+
+      {/* 백로그 섹션 (맨 아래) */}
+      <BacklogSection />
 
     </div>
   )

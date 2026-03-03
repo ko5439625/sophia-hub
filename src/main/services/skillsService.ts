@@ -6,7 +6,7 @@ import { homedir } from 'os'
 export type Skill = {
   name: string
   description: string
-  category: 'dev' | 'idea' | 'work' | 'more'
+  category: 'project' | 'dev' | 'idea' | 'work' | 'more'
   projectPath?: string
   techStack?: string
 }
@@ -19,24 +19,33 @@ type Project = {
 
 const SKILLS_DIR = join(homedir(), '.claude', 'skills')
 
-// 기존 스킬 매핑 (폴백)
+// 스킬 카테고리 매핑
 const CATEGORY_MAP: Record<string, Skill['category']> = {
+  // 프로젝트 (project) - 개별 프로젝트 전용 스킬
+  확률: 'project',
+  확률확인: 'project',
+  지라: 'project',
+  포폴: 'project',
+  DIFF: 'project',
+  영상분석: 'project',
+  허브: 'project',
+  // 개발 (dev) - 개발 워크플로우 스킬
   개발: 'dev',
-  확률: 'dev',
-  확률확인: 'dev',
-  지라: 'dev',
-  포폴: 'dev',
-  DIFF: 'dev',
-  영상분석: 'dev',
+  프로젝트: 'dev',
+  백로그: 'dev',
+  PRD: 'dev',
+  // 아이디어 (idea)
   아이디어: 'idea',
+  // 업무 (work)
   업무: 'work',
+  데일리: 'work',
   QA: 'work',
   회고: 'work',
+  // 더보기 (more)
   시작: 'more',
   리서치: 'more',
   블로그등록: 'more',
-  허브: 'dev',
-  PRD: 'work'
+  메모리: 'more'
 }
 
 // SKILL.md 내용 기반 자동 분류
@@ -105,6 +114,9 @@ export class SkillsService {
         let description = name
         const fmMatch = content.match(/^---\n([\s\S]*?)\n---/)
         if (fmMatch) {
+          // user-invocable: false인 스킬은 스킵
+          if (/user-invocable:\s*false/.test(fmMatch[1])) continue
+
           const descMatch = fmMatch[1].match(/description:\s*(.+)/)
           if (descMatch) description = descMatch[1].trim()
         }

@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 
-type TabId = 'home' | 'work' | 'history' | 'notes' | 'more'
+type TabId = 'home' | 'work' | 'tools' | 'notes' | 'more'
 
 interface HubState {
   skills: Skill[]
@@ -12,6 +12,7 @@ interface HubState {
   images: ImageFile[]
   bookmarks: Bookmark[]
   notes: Note[]
+  activeProject: string | null
 
   setSkills: (s: Skill[]) => void
   setRecentSkills: (s: string[]) => void
@@ -22,6 +23,7 @@ interface HubState {
   setImages: (i: ImageFile[]) => void
   setBookmarks: (b: Bookmark[]) => void
   setNotes: (n: Note[]) => void
+  setActiveProject: (p: string | null) => void
   launchSkill: (name: string, projectPath?: string) => Promise<void>
 }
 
@@ -35,6 +37,7 @@ export const useHubStore = create<HubState>((set, get) => ({
   images: [],
   bookmarks: [],
   notes: [],
+  activeProject: null,
 
   setSkills: (skills) => set({ skills }),
   setRecentSkills: (recentSkills) => set({ recentSkills }),
@@ -45,11 +48,16 @@ export const useHubStore = create<HubState>((set, get) => ({
   setImages: (images) => set({ images }),
   setBookmarks: (bookmarks) => set({ bookmarks }),
   setNotes: (notes) => set({ notes }),
+  setActiveProject: (activeProject) => set({ activeProject }),
 
   launchSkill: async (name, projectPath) => {
     await window.api.launchSkill(name, projectPath)
     const recent = get().recentSkills
     const updated = [name, ...recent.filter((s) => s !== name)].slice(0, 8)
-    set({ recentSkills: updated })
+    const activeProject = projectPath ? name : get().activeProject
+    set({ recentSkills: updated, activeProject })
+    if (projectPath) {
+      window.api.setStore('activeProject', { name, time: Date.now() })
+    }
   }
 }))
