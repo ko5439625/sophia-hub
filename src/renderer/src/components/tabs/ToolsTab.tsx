@@ -1,10 +1,11 @@
 import { useState } from 'react'
 import { colors, typography, spacing, radius, transition } from '../../styles/tokens'
-import { Link2, Image, Video, Zap, ChevronDown } from 'lucide-react'
+import { Link2, Image, Video, Zap, Wifi, ChevronDown } from 'lucide-react'
 import LinksTab from './LinksTab'
 import ImagesTab from './ImagesTab'
 import QuickRecSection from './QuickRecSection'
 import MacroSection from './MacroSection'
+import NetworkTestSection from './NetworkTestSection'
 
 const TOOLS: Array<{ id: string; label: string; icon: React.ReactNode; color: string; desc: string }> = [
   { id: 'links', label: 'Links', icon: <Link2 size={16} />, color: colors.accent.primary, desc: '즐겨찾기 관리' },
@@ -76,6 +77,12 @@ export default function ToolsTab(): JSX.Element {
         title="Simple Macro" icon={<Zap size={14} />}
         color="#FFD60A" desc="매크로 녹화 및 실행" defaultOpen={false}>
         <MacroSection />
+      </ToolSection>
+
+      <ToolSection
+        title="Network Test" icon={<Wifi size={14} />}
+        color="#FF9F0A" desc="네트워크 단절 테스트" defaultOpen={false}>
+        <NetworkTestSection />
       </ToolSection>
     </div>
   )

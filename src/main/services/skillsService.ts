@@ -41,6 +41,7 @@ const CATEGORY_MAP: Record<string, Skill['category']> = {
   데일리: 'work',
   QA: 'work',
   회고: 'work',
+  문서정리: 'work',
   // 더보기 (more)
   시작: 'more',
   리서치: 'more',

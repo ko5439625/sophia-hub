@@ -2,6 +2,8 @@ import { create } from 'zustand'
 
 type TabId = 'home' | 'work' | 'tools' | 'notes' | 'more'
 
+type Goal = { id: string; text: string; done: boolean; weekStart: number }
+
 interface HubState {
   skills: Skill[]
   recentSkills: string[]
@@ -13,6 +15,7 @@ interface HubState {
   bookmarks: Bookmark[]
   notes: Note[]
   activeProject: string | null
+  goals: Goal[]
 
   setSkills: (s: Skill[]) => void
   setRecentSkills: (s: string[]) => void
@@ -24,6 +27,8 @@ interface HubState {
   setBookmarks: (b: Bookmark[]) => void
   setNotes: (n: Note[]) => void
   setActiveProject: (p: string | null) => void
+  setGoals: (g: Goal[]) => void
+  saveGoals: (g: Goal[]) => void
   launchSkill: (name: string, projectPath?: string) => Promise<void>
 }
 
@@ -38,6 +43,7 @@ export const useHubStore = create<HubState>((set, get) => ({
   bookmarks: [],
   notes: [],
   activeProject: null,
+  goals: [],
 
   setSkills: (skills) => set({ skills }),
   setRecentSkills: (recentSkills) => set({ recentSkills }),
@@ -49,6 +55,11 @@ export const useHubStore = create<HubState>((set, get) => ({
   setBookmarks: (bookmarks) => set({ bookmarks }),
   setNotes: (notes) => set({ notes }),
   setActiveProject: (activeProject) => set({ activeProject }),
+  setGoals: (goals) => set({ goals }),
+  saveGoals: (goals) => {
+    set({ goals })
+    window.api.setStore('goals', goals)
+  },
 
   launchSkill: async (name, projectPath) => {
     await window.api.launchSkill(name, projectPath)

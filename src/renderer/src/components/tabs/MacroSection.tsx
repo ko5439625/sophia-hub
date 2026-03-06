@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from 'react'
 import { colors, typography, spacing, radius, transition } from '../../styles/tokens'
-import { Crosshair, Type, Keyboard, Clock, Trash2, Play, Copy, Plus, Save, Square, MousePointer, Pipette, GripVertical, ArrowRight, Video, Monitor, ChevronDown } from 'lucide-react'
+import { Crosshair, Type, Keyboard, Clock, Trash2, Play, Copy, Plus, Save, Square, MousePointer, Pipette, GripVertical, ArrowRight, Video, Monitor, ChevronDown, Search, BarChart3, Clipboard, FileJson, Image, X } from 'lucide-react'
 
 const STEP_COLORS: Record<string, string> = {
   path: '#FF453A',
@@ -9,7 +9,8 @@ const STEP_COLORS: Record<string, string> = {
   direction: '#FF9500',
   text: '#30D158',
   key: '#BF5AF2',
-  wait: '#64D2FF'
+  wait: '#64D2FF',
+  ocr: '#0A84FF'
 }
 
 const STEP_LABELS: Record<string, string> = {
@@ -19,7 +20,8 @@ const STEP_LABELS: Record<string, string> = {
   direction: '방향',
   text: '텍스트',
   key: '단축키',
-  wait: '대기'
+  wait: '대기',
+  ocr: 'OCR'
 }
 
 const DIR_LABELS: Record<string, string> = { left: '←', right: '→', up: '↑', down: '↓' }
@@ -31,12 +33,22 @@ function generateId(): string {
 function formatStepSummary(step: MacroStep): string {
   switch (step.type) {
     case 'path': return `${step.points.length}점, ${(step.duration / 1000).toFixed(1)}s`
-    case 'click': return `(${step.x}, ${step.y}) ${step.button === 'right' ? '우클릭' : '좌클릭'}`
+    case 'click': return `(${step.x}, ${step.y}) ${step.button === 'right' ? '우클릭' : '좌클릭'}${step.retry ? ` ↻${step.retry.maxRetries}` : ''}`
     case 'move': return `(${step.x}, ${step.y})`
     case 'text': return step.value.length > 20 ? step.value.slice(0, 20) + '…' : step.value
-    case 'key': return step.keys.join('+')
+    case 'key': {
+      const k = step.keys.join('+')
+      if (step.duration) return `${k} ${(step.duration / 1000).toFixed(1)}s`
+      if (step.repeat && step.repeat > 1) return `${k} x${step.repeat}`
+      return k
+    }
     case 'direction': return `${DIR_LABELS[step.dir]} ${step.speed}px ${step.duration > 0 ? (step.duration / 1000).toFixed(1) + 's' : '무한'}`
     case 'wait': return step.random ? `랜덤 ${step.min}~${step.max}ms` : `${step.ms}ms`
+    case 'ocr': {
+      const g = step.grid ? `${step.grid.rows}x${step.grid.cols}` : '1x1'
+      const mode = step.matchMode === 'template' ? '[누끼]' : '[전체]'
+      return `${mode} "${step.label}" ${g}`
+    }
   }
 }
 
@@ -49,10 +61,10 @@ export default function MacroSection(): JSX.Element {
   const [lastPickResult, setLastPickResult] = useState<{ x: number; y: number; color: string } | null>(null)
   const [dragIndex, setDragIndex] = useState<number | null>(null)
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null)
-  const [recordWithMacro, setRecordWithMacro] = useState(false)
   const [recSources, setRecSources] = useState<RecordingSource[]>([])
   const [recSourceId, setRecSourceId] = useState<string>('')
   const [showRecSourcePicker, setShowRecSourcePicker] = useState(false)
+  const [adminTaskReady, setAdminTaskReady] = useState(false)
 
   // Direction dialog
   const [showDirDialog, setShowDirDialog] = useState(false)
@@ -64,12 +76,36 @@ export default function MacroSection(): JSX.Element {
   const [customRepeat, setCustomRepeat] = useState(false)
   const [customRepeatInput, setCustomRepeatInput] = useState('')
 
+  // OCR / Image Match dialog
+  const [showOcrDialog, setShowOcrDialog] = useState(false)
+  const [ocrLabel, setOcrLabel] = useState('')
+  const [ocrRegion, setOcrRegion] = useState<{ x1: number; y1: number; x2: number; y2: number } | null>(null)
+  const [ocrGridRows, setOcrGridRows] = useState('1')
+  const [ocrGridCols, setOcrGridCols] = useState('1')
+  const [ocrThreshold, setOcrThreshold] = useState('85')
+  const [ocrMatchMode, setOcrMatchMode] = useState<'resize' | 'template'>('resize')
+  const [ocrSessionResult, setOcrSessionResult] = useState<OcrSession | null>(null)
+
+  // Reference image management
+  const [refs, setRefs] = useState<MatchRefImage[]>([])
+  const [refThumbnails, setRefThumbnails] = useState<Record<string, string>>({})
+  const [showRefManager, setShowRefManager] = useState(false)
+  const [showAddRef, setShowAddRef] = useState(false)
+  const [addRefRegion, setAddRefRegion] = useState<{ x1: number; y1: number; x2: number; y2: number } | null>(null)
+  const [addRefName, setAddRefName] = useState('')
+  const [addRefPreview, setAddRefPreview] = useState<string | null>(null)
+  const [addRefCapturing, setAddRefCapturing] = useState(false)
+
   // Dialog states
   const [showTextDialog, setShowTextDialog] = useState(false)
   const [showKeyDialog, setShowKeyDialog] = useState(false)
   const [showWaitDialog, setShowWaitDialog] = useState(false)
   const [textInput, setTextInput] = useState('')
   const [keyInput, setKeyInput] = useState('')
+  const [keyMode, setKeyMode] = useState<'once' | 'repeat' | 'duration'>('once')
+  const [keyRepeat, setKeyRepeat] = useState('5')
+  const [keyDuration, setKeyDuration] = useState('3')
+  const [keyInterval, setKeyInterval] = useState('100')
   const [waitInput, setWaitInput] = useState('500')
   const [waitRandom, setWaitRandom] = useState(false)
   const [waitMinInput, setWaitMinInput] = useState('300')
@@ -80,9 +116,14 @@ export default function MacroSection(): JSX.Element {
   // Load macros on mount
   useEffect(() => {
     loadMacros()
+    window.api.checkAdminTask().then(setAdminTaskReady)
     statusUnsubRef.current = window.api.onMacroStatus(async (s) => {
-      setExecStatus(s as MacroExecStatus)
-      if ((s as MacroExecStatus).state === 'stopped') {
+      const status = s as MacroExecStatus
+      setExecStatus(status)
+      if (status.state === 'stopped' && status.ocrSession) {
+        setOcrSessionResult(status.ocrSession)
+      }
+      if (status.state === 'stopped') {
         // Stop background recording if active
         try {
           const rec = await window.api.stopBgRecording()
@@ -103,6 +144,28 @@ export default function MacroSection(): JSX.Element {
     const m = await window.api.getMacros()
     setMacros(m)
   }
+
+  const loadRefs = async (macroId: string): Promise<void> => {
+    const r = await window.api.getMatchRefs(macroId)
+    setRefs(r)
+    const thumbs: Record<string, string> = {}
+    for (const ref of r) {
+      const data = await window.api.getImageData(ref.imagePath)
+      if (data) thumbs[ref.id] = data
+    }
+    setRefThumbnails(thumbs)
+  }
+
+  // Load refs when editing macro changes and has OCR steps
+  useEffect(() => {
+    if (editingMacro && editingMacro.steps.some(s => s.type === 'ocr')) {
+      loadRefs(editingMacro.id)
+    } else {
+      setRefs([])
+      setRefThumbnails({})
+      setShowRefManager(false)
+    }
+  }, [editingMacro?.id, editingMacro?.steps.filter(s => s.type === 'ocr').length])
 
   // --- Picker logic (overlay-based) ---
   const pickCoord = async (): Promise<void> => {
@@ -191,9 +254,14 @@ export default function MacroSection(): JSX.Element {
   const addKeyStep = (): void => {
     if (!editingMacro || !keyInput.trim()) return
     const keys = keyInput.split('+').map(k => k.trim().toLowerCase())
-    const step: MacroStep = { type: 'key', keys }
+    const step: MacroStep = {
+      type: 'key', keys,
+      ...(keyMode === 'repeat' ? { repeat: parseInt(keyRepeat) || 5, interval: parseInt(keyInterval) || 100 } : {}),
+      ...(keyMode === 'duration' ? { duration: (parseFloat(keyDuration) || 3) * 1000, interval: parseInt(keyInterval) || 100 } : {})
+    }
     setEditingMacro({ ...editingMacro, steps: [...editingMacro.steps, step] })
     setKeyInput('')
+    setKeyMode('once')
     setShowKeyDialog(false)
   }
 
@@ -222,6 +290,66 @@ export default function MacroSection(): JSX.Element {
     setWaitMinInput('300')
     setWaitMaxInput('1500')
     setShowWaitDialog(false)
+  }
+
+  const pickOcrRegion = async (): Promise<void> => {
+    const region = await window.api.pickOcrRegion()
+    if (region) setOcrRegion(region)
+  }
+
+  const addOcrStep = (): void => {
+    if (!editingMacro || !ocrRegion || !ocrLabel.trim()) return
+    const rows = Math.max(1, parseInt(ocrGridRows) || 1)
+    const cols = Math.max(1, parseInt(ocrGridCols) || 1)
+    const threshold = Math.min(100, Math.max(1, parseInt(ocrThreshold) || 85)) / 100
+    const step: MacroStep = {
+      type: 'ocr', label: ocrLabel.trim(), region: ocrRegion,
+      grid: { rows, cols }, threshold, matchMode: ocrMatchMode
+    }
+    setEditingMacro({ ...editingMacro, steps: [...editingMacro.steps, step] })
+    setOcrLabel('')
+    setOcrRegion(null)
+    setOcrGridRows('1')
+    setOcrGridCols('1')
+    setOcrThreshold('85')
+    setOcrMatchMode('resize')
+    setShowOcrDialog(false)
+    showStatusMsg('이미지 매칭 스텝 추가됨')
+  }
+
+  const pickRefRegion = async (): Promise<void> => {
+    setAddRefCapturing(true)
+    const region = await window.api.pickOcrRegion()
+    setAddRefCapturing(false)
+    if (!region) return
+    setAddRefRegion(region)
+    // Capture the region as preview
+    const buf = await window.api.captureRegionBuffer(region)
+    if (buf) {
+      const blob = new Blob([buf], { type: 'image/png' })
+      const url = URL.createObjectURL(blob)
+      setAddRefPreview(url)
+    }
+  }
+
+  const saveNewRef = async (): Promise<void> => {
+    if (!editingMacro || !addRefRegion || !addRefName.trim()) return
+    const buf = await window.api.captureRegionBuffer(addRefRegion)
+    if (!buf) { showStatusMsg('캡처 실패'); return }
+    await window.api.saveMatchRefBuffer(editingMacro.id, addRefName.trim(), buf)
+    showStatusMsg(`레퍼런스 "${addRefName.trim()}" 등록됨`)
+    setAddRefName('')
+    setAddRefRegion(null)
+    if (addRefPreview) { URL.revokeObjectURL(addRefPreview); setAddRefPreview(null) }
+    setShowAddRef(false)
+    loadRefs(editingMacro.id)
+  }
+
+  const deleteRef = async (refId: string): Promise<void> => {
+    if (!editingMacro) return
+    await window.api.deleteMatchRef(editingMacro.id, refId)
+    showStatusMsg('레퍼런스 삭제됨')
+    loadRefs(editingMacro.id)
   }
 
   const removeStep = (index: number): void => {
@@ -280,7 +408,8 @@ export default function MacroSection(): JSX.Element {
     const now = Date.now()
     const copy: Macro = { ...macro, id: generateId(), name: macro.name + ' (복사)', createdAt: now, updatedAt: now }
     await window.api.saveMacro(copy)
-    showStatusMsg('복사됨')
+    await window.api.copyMacroRefs(macro.id, copy.id)
+    showStatusMsg('복사됨 (레퍼런스 포함)')
     await loadMacros()
   }
 
@@ -289,7 +418,8 @@ export default function MacroSection(): JSX.Element {
     setTimeout(() => setStatus(''), 2000)
   }
 
-  const isExecuting = execStatus && (execStatus.state === 'countdown' || execStatus.state === 'running')
+  const isExecuting = execStatus && (execStatus.state === 'countdown' || execStatus.state === 'running' || execStatus.state === 'ocr-processing')
+  const hasOcrSteps = editingMacro?.steps.some(s => s.type === 'ocr') ?? false
 
   // Select style fix for dark theme
   const selectStyle: React.CSSProperties = {
@@ -441,7 +571,7 @@ export default function MacroSection(): JSX.Element {
                     overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'
                   }}>{formatStepSummary(step)}</span>
                   {/* 클릭 스텝: 좌/우 토글 버튼 */}
-                  {step.type === 'click' && (
+                  {step.type === 'click' && (<>
                     <button onClick={() => toggleClickButton(i)} title="좌/우클릭 전환" style={{
                       padding: '1px 6px', borderRadius: 3, border: `1px solid ${color}30`,
                       background: step.button === 'right' ? `${color}20` : `${color}10`,
@@ -450,7 +580,33 @@ export default function MacroSection(): JSX.Element {
                     }}>
                       {step.button === 'right' ? '우' : '좌'}
                     </button>
-                  )}
+                    <button onClick={async () => {
+                      if (step.retry) {
+                        // 재시도 해제
+                        const updated = { ...step }; delete updated.retry
+                        const steps = [...editingMacro!.steps]; steps[i] = updated
+                        setEditingMacro({ ...editingMacro!, steps })
+                      } else {
+                        // 재시도 영역 지정
+                        showStatusMsg('확인 영역을 드래그하세요 (팝업이 뜰 위치)')
+                        const region = await window.api.pickOcrRegion()
+                        if (region) {
+                          const updated = { ...step, retry: { region, maxRetries: 3, delay: 500 } }
+                          const steps = [...editingMacro!.steps]; steps[i] = updated
+                          setEditingMacro({ ...editingMacro!, steps })
+                          showStatusMsg('재시도 영역 설정됨')
+                        }
+                      }
+                    }} title={step.retry ? `재시도 ON (${step.retry.maxRetries}회)` : '클릭 재시도 설정'} style={{
+                      padding: '1px 5px', borderRadius: 3, border: `1px solid ${step.retry ? '#30D158' : color}30`,
+                      background: step.retry ? 'rgba(48,209,88,0.15)' : `${color}08`,
+                      color: step.retry ? '#30D158' : `${color}60`,
+                      cursor: 'pointer', fontSize: 8, fontWeight: 700,
+                      transition: transition.fast, lineHeight: '14px'
+                    }}>
+                      {step.retry ? `↻${step.retry.maxRetries}` : '↻'}
+                    </button>
+                  </>)}
                   <button onClick={() => removeStep(i)} style={{
                     padding: 2, border: 'none', background: 'none',
                     color: `${color}80`, cursor: 'pointer', display: 'flex', transition: transition.fast
@@ -484,7 +640,6 @@ export default function MacroSection(): JSX.Element {
             }}>
               <MousePointer size={9} /> 경로녹화
             </button>
-
             {/* 좌표 픽 */}
             <button onClick={pickCoord} style={{
               padding: '5px 8px', borderRadius: radius.sm, border: 'none',
@@ -538,6 +693,14 @@ export default function MacroSection(): JSX.Element {
               display: 'flex', alignItems: 'center', gap: 3, transition: transition.fast
             }}>
               <ArrowRight size={9} /> 방향
+            </button>
+            <button onClick={() => setShowOcrDialog(true)} style={{
+              padding: '5px 8px', borderRadius: radius.sm, border: 'none',
+              background: `${STEP_COLORS.ocr}10`, color: STEP_COLORS.ocr,
+              cursor: 'pointer', fontSize: 10, fontWeight: 600,
+              display: 'flex', alignItems: 'center', gap: 3, transition: transition.fast
+            }}>
+              <Search size={9} /> OCR 캡처
             </button>
           </div>
 
@@ -628,7 +791,7 @@ export default function MacroSection(): JSX.Element {
               <div style={{ fontSize: 9, color: colors.text.tertiary, marginBottom: 4 }}>
                 예: ctrl+s, alt+tab, ctrl+shift+n
               </div>
-              <div style={{ display: 'flex', gap: spacing.xs }}>
+              <div style={{ display: 'flex', gap: spacing.xs, marginBottom: 6 }}>
                 <input value={keyInput} onChange={(e) => setKeyInput(e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter') addKeyStep() }}
                   placeholder="ctrl+s" autoFocus
@@ -637,11 +800,53 @@ export default function MacroSection(): JSX.Element {
                     background: colors.bg.input, border: `1px solid ${colors.border.primary}`,
                     color: colors.text.primary, fontSize: 11, outline: 'none', fontFamily: 'Consolas, monospace'
                   }} />
+              </div>
+              <div style={{ display: 'flex', gap: 2, marginBottom: 6 }}>
+                {(['once', 'repeat', 'duration'] as const).map((mode, idx) => (
+                  <button key={mode} onClick={() => setKeyMode(mode)} style={{
+                    flex: 1, padding: '4px 0',
+                    borderRadius: idx === 0 ? `${radius.sm}px 0 0 ${radius.sm}px` : idx === 2 ? `0 ${radius.sm}px ${radius.sm}px 0` : '0',
+                    border: `1px solid ${STEP_COLORS.key}30`, borderLeft: idx > 0 ? 'none' : undefined,
+                    background: keyMode === mode ? `${STEP_COLORS.key}20` : 'transparent',
+                    color: keyMode === mode ? STEP_COLORS.key : colors.text.tertiary,
+                    cursor: 'pointer', fontSize: 10, fontWeight: 600
+                  }}>{mode === 'once' ? '1회' : mode === 'repeat' ? 'N회' : 'N초'}</button>
+                ))}
+              </div>
+              {keyMode !== 'once' && (
+                <div style={{ display: 'flex', gap: spacing.xs, marginBottom: 6 }}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 8, color: colors.text.tertiary, marginBottom: 2 }}>
+                      {keyMode === 'repeat' ? '반복 횟수' : '지속 시간(초)'}
+                    </div>
+                    <input
+                      value={keyMode === 'repeat' ? keyRepeat : keyDuration}
+                      onChange={(e) => keyMode === 'repeat' ? setKeyRepeat(e.target.value) : setKeyDuration(e.target.value)}
+                      type="number" min="1" step={keyMode === 'duration' ? '0.5' : '1'}
+                      style={{
+                        width: '100%', padding: '4px 8px', borderRadius: radius.sm,
+                        background: colors.bg.input, border: `1px solid ${colors.border.primary}`,
+                        color: colors.text.primary, fontSize: 11, outline: 'none'
+                      }} />
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 8, color: colors.text.tertiary, marginBottom: 2 }}>간격(ms)</div>
+                    <input value={keyInterval} onChange={(e) => setKeyInterval(e.target.value)}
+                      type="number" min="10" step="10"
+                      style={{
+                        width: '100%', padding: '4px 8px', borderRadius: radius.sm,
+                        background: colors.bg.input, border: `1px solid ${colors.border.primary}`,
+                        color: colors.text.primary, fontSize: 11, outline: 'none'
+                      }} />
+                  </div>
+                </div>
+              )}
+              <div style={{ display: 'flex', gap: spacing.xs }}>
                 <button onClick={addKeyStep} style={{
                   padding: '6px 12px', borderRadius: radius.sm, border: 'none',
                   background: STEP_COLORS.key, color: '#fff', cursor: 'pointer', fontSize: 10, fontWeight: 700
                 }}>추가</button>
-                <button onClick={() => { setShowKeyDialog(false); setKeyInput('') }} style={{
+                <button onClick={() => { setShowKeyDialog(false); setKeyInput(''); setKeyMode('once') }} style={{
                   padding: '6px 8px', borderRadius: radius.sm, border: 'none',
                   background: colors.bg.card, color: colors.text.tertiary, cursor: 'pointer', fontSize: 10
                 }}>취소</button>
@@ -769,6 +974,278 @@ export default function MacroSection(): JSX.Element {
             </div>
           )}
 
+          {/* OCR Dialog */}
+          {showOcrDialog && (
+            <div style={{
+              padding: `${spacing.sm}px ${spacing.md}px`,
+              borderTop: `1px solid ${STEP_COLORS.ocr}20`, background: `${STEP_COLORS.ocr}05`
+            }}>
+              <div style={{ fontSize: 9, color: colors.text.tertiary, marginBottom: 6 }}>
+                결과 화면 영역 → 그리드 분할 → 레퍼런스 이미지와 매칭
+              </div>
+              {/* Match Mode Toggle */}
+              <div style={{ display: 'flex', gap: 2, marginBottom: 6 }}>
+                <button onClick={() => setOcrMatchMode('resize')} style={{
+                  flex: 1, padding: '5px 0', borderRadius: `${radius.sm}px 0 0 ${radius.sm}px`,
+                  border: `1px solid ${STEP_COLORS.ocr}30`,
+                  background: ocrMatchMode === 'resize' ? `${STEP_COLORS.ocr}20` : 'transparent',
+                  color: ocrMatchMode === 'resize' ? STEP_COLORS.ocr : colors.text.tertiary,
+                  cursor: 'pointer', fontSize: 10, fontWeight: 600
+                }}>전체 매칭</button>
+                <button onClick={() => setOcrMatchMode('template')} style={{
+                  flex: 1, padding: '5px 0', borderRadius: `0 ${radius.sm}px ${radius.sm}px 0`,
+                  border: `1px solid ${STEP_COLORS.ocr}30`, borderLeft: 'none',
+                  background: ocrMatchMode === 'template' ? `${STEP_COLORS.ocr}20` : 'transparent',
+                  color: ocrMatchMode === 'template' ? STEP_COLORS.ocr : colors.text.tertiary,
+                  cursor: 'pointer', fontSize: 10, fontWeight: 600
+                }}>누끼 매칭</button>
+              </div>
+              <div style={{ fontSize: 8, color: colors.text.tertiary, marginBottom: 6 }}>
+                {ocrMatchMode === 'resize'
+                  ? '화면을 그리드로 분할 → 각 슬롯을 레퍼런스와 1:1 비교 (레이아웃 고정일 때)'
+                  : '화면 전체에서 레퍼런스 이미지를 자동 탐색 · 배경 자동 제거(누끼) · 그리드 불필요'}
+              </div>
+              {/* Region selection */}
+              <div style={{ display: 'flex', gap: spacing.xs, marginBottom: 6, alignItems: 'center' }}>
+                <button onClick={pickOcrRegion} style={{
+                  padding: '5px 10px', borderRadius: radius.sm, border: `1px solid ${STEP_COLORS.ocr}30`,
+                  background: ocrRegion ? `${STEP_COLORS.ocr}15` : 'transparent',
+                  color: STEP_COLORS.ocr, cursor: 'pointer', fontSize: 10, fontWeight: 600,
+                  display: 'flex', alignItems: 'center', gap: 3
+                }}>
+                  <Crosshair size={9} /> {ocrRegion ? '영역 재선택' : '캡처 영역 선택'}
+                </button>
+                {ocrRegion && (
+                  <span style={{
+                    fontFamily: 'Consolas, monospace', fontSize: 10, color: colors.text.secondary
+                  }}>
+                    ({ocrRegion.x1},{ocrRegion.y1}) ~ ({ocrRegion.x2},{ocrRegion.y2})
+                  </span>
+                )}
+              </div>
+              {/* Grid (resize mode only) + Threshold */}
+              <div style={{ display: 'flex', gap: spacing.sm, marginBottom: 6, alignItems: 'center' }}>
+                {ocrMatchMode === 'resize' && (<>
+                  <span style={{ fontSize: 10, color: colors.text.secondary }}>그리드</span>
+                  <input value={ocrGridRows} onChange={(e) => setOcrGridRows(e.target.value.replace(/\D/g, ''))}
+                    placeholder="행" style={{
+                      width: 32, padding: '4px 6px', borderRadius: radius.sm,
+                      background: colors.bg.input, border: `1px solid ${colors.border.primary}`,
+                      color: colors.text.primary, fontSize: 10, outline: 'none',
+                      fontFamily: 'Consolas, monospace', textAlign: 'center'
+                    }} />
+                  <span style={{ fontSize: 10, color: colors.text.tertiary }}>x</span>
+                  <input value={ocrGridCols} onChange={(e) => setOcrGridCols(e.target.value.replace(/\D/g, ''))}
+                    placeholder="열" style={{
+                      width: 32, padding: '4px 6px', borderRadius: radius.sm,
+                      background: colors.bg.input, border: `1px solid ${colors.border.primary}`,
+                      color: colors.text.primary, fontSize: 10, outline: 'none',
+                      fontFamily: 'Consolas, monospace', textAlign: 'center'
+                    }} />
+                </>)}
+                <span style={{ fontSize: 10, color: colors.text.tertiary, marginLeft: ocrMatchMode === 'resize' ? 4 : 0 }}>유사도</span>
+                <input value={ocrThreshold} onChange={(e) => setOcrThreshold(e.target.value.replace(/\D/g, ''))}
+                  placeholder="85" style={{
+                    width: 32, padding: '4px 6px', borderRadius: radius.sm,
+                    background: colors.bg.input, border: `1px solid ${colors.border.primary}`,
+                    color: colors.text.primary, fontSize: 10, outline: 'none',
+                    fontFamily: 'Consolas, monospace', textAlign: 'center'
+                  }} />
+                <span style={{ fontSize: 9, color: colors.text.tertiary }}>%</span>
+              </div>
+              {/* Label + Actions */}
+              <div style={{ display: 'flex', gap: spacing.xs, alignItems: 'center' }}>
+                <input value={ocrLabel} onChange={(e) => setOcrLabel(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') addOcrStep() }}
+                  placeholder="레이블 (예: 가챠결과, 등급)" autoFocus
+                  style={{
+                    flex: 1, padding: '6px 10px', borderRadius: radius.sm,
+                    background: colors.bg.input, border: `1px solid ${colors.border.primary}`,
+                    color: colors.text.primary, fontSize: 11, outline: 'none'
+                  }} />
+                <button onClick={addOcrStep} disabled={!ocrRegion || !ocrLabel.trim()} style={{
+                  padding: '6px 12px', borderRadius: radius.sm, border: 'none',
+                  background: (!ocrRegion || !ocrLabel.trim()) ? colors.bg.card : STEP_COLORS.ocr,
+                  color: (!ocrRegion || !ocrLabel.trim()) ? colors.text.tertiary : '#fff',
+                  cursor: (!ocrRegion || !ocrLabel.trim()) ? 'not-allowed' : 'pointer',
+                  fontSize: 10, fontWeight: 700
+                }}>추가</button>
+                <button onClick={() => { setShowOcrDialog(false); setOcrLabel(''); setOcrRegion(null) }} style={{
+                  padding: '6px 8px', borderRadius: radius.sm, border: 'none',
+                  background: colors.bg.card, color: colors.text.tertiary, cursor: 'pointer', fontSize: 10
+                }}>취소</button>
+              </div>
+            </div>
+          )}
+
+          {/* Reference Image Manager - shown when macro has OCR steps */}
+          {hasOcrSteps && (
+            <div style={{
+              borderTop: `1px solid ${STEP_COLORS.ocr}15`,
+              background: `${STEP_COLORS.ocr}03`
+            }}>
+              <div
+                onClick={() => setShowRefManager(!showRefManager)}
+                style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  padding: `${spacing.sm}px ${spacing.md}px`, cursor: 'pointer'
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <Image size={11} style={{ color: STEP_COLORS.ocr }} />
+                  <span style={{ fontSize: 11, fontWeight: 600, color: STEP_COLORS.ocr }}>
+                    레퍼런스 이미지
+                  </span>
+                  <span style={{
+                    fontSize: 9, padding: '1px 5px', borderRadius: 8,
+                    background: `${STEP_COLORS.ocr}15`, color: STEP_COLORS.ocr, fontWeight: 700
+                  }}>{refs.length}</span>
+                </div>
+                <ChevronDown size={12} style={{
+                  color: STEP_COLORS.ocr, transition: 'transform 150ms',
+                  transform: showRefManager ? 'rotate(180deg)' : 'rotate(0deg)'
+                }} />
+              </div>
+
+              {showRefManager && (
+                <div style={{ padding: `0 ${spacing.md}px ${spacing.sm}px` }}>
+                  {/* Ref list */}
+                  {refs.length > 0 ? (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+                      {refs.map(ref => (
+                        <div key={ref.id} style={{
+                          position: 'relative', width: 64, textAlign: 'center'
+                        }}>
+                          <div style={{
+                            width: 64, height: 64, borderRadius: radius.sm,
+                            border: `1px solid ${STEP_COLORS.ocr}25`,
+                            background: colors.bg.elevated, overflow: 'hidden',
+                            display: 'flex', alignItems: 'center', justifyContent: 'center'
+                          }}>
+                            {refThumbnails[ref.id] ? (
+                              <img src={refThumbnails[ref.id]} alt={ref.name} style={{
+                                width: '100%', height: '100%', objectFit: 'contain'
+                              }} />
+                            ) : (
+                              <Image size={16} style={{ color: colors.text.tertiary }} />
+                            )}
+                          </div>
+                          <div style={{
+                            fontSize: 9, color: colors.text.secondary, marginTop: 2,
+                            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'
+                          }}>{ref.name}</div>
+                          <button onClick={() => deleteRef(ref.id)} style={{
+                            position: 'absolute', top: -4, right: -4,
+                            width: 16, height: 16, borderRadius: 8, border: 'none',
+                            background: 'rgba(255,69,58,0.9)', color: '#fff',
+                            cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            fontSize: 10, padding: 0
+                          }}>
+                            <X size={10} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div style={{
+                      fontSize: 10, color: colors.text.tertiary, textAlign: 'center',
+                      padding: '8px 0', marginBottom: 6
+                    }}>
+                      등록된 레퍼런스가 없습니다. 매칭할 이미지를 추가하세요.
+                    </div>
+                  )}
+
+                  {/* Add ref button / dialog */}
+                  {!showAddRef ? (
+                    <button onClick={() => setShowAddRef(true)} style={{
+                      width: '100%', padding: '6px', borderRadius: radius.sm,
+                      border: `1px dashed ${STEP_COLORS.ocr}30`,
+                      background: 'transparent', color: STEP_COLORS.ocr,
+                      cursor: 'pointer', fontSize: 10, fontWeight: 600,
+                      display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4
+                    }}>
+                      <Plus size={10} /> 레퍼런스 추가
+                    </button>
+                  ) : (
+                    <div style={{
+                      padding: 8, borderRadius: radius.sm,
+                      background: `${STEP_COLORS.ocr}08`, border: `1px solid ${STEP_COLORS.ocr}15`
+                    }}>
+                      <div style={{ fontSize: 9, color: colors.text.tertiary, marginBottom: 6 }}>
+                        화면에서 레퍼런스 이미지 영역을 선택하세요
+                      </div>
+                      {/* Region pick + preview */}
+                      <div style={{ display: 'flex', gap: 8, marginBottom: 6, alignItems: 'center' }}>
+                        <button onClick={pickRefRegion} disabled={addRefCapturing} style={{
+                          padding: '5px 10px', borderRadius: radius.sm,
+                          border: `1px solid ${STEP_COLORS.ocr}30`,
+                          background: addRefRegion ? `${STEP_COLORS.ocr}15` : 'transparent',
+                          color: STEP_COLORS.ocr, cursor: 'pointer', fontSize: 10, fontWeight: 600,
+                          display: 'flex', alignItems: 'center', gap: 3,
+                          opacity: addRefCapturing ? 0.5 : 1
+                        }}>
+                          <Crosshair size={9} /> {addRefRegion ? '재선택' : '영역 선택'}
+                        </button>
+                        {addRefPreview && (
+                          <div style={{
+                            width: 48, height: 48, borderRadius: radius.sm,
+                            border: `1px solid ${STEP_COLORS.ocr}25`,
+                            overflow: 'hidden', flexShrink: 0
+                          }}>
+                            <img src={addRefPreview} alt="preview" style={{
+                              width: '100%', height: '100%', objectFit: 'contain'
+                            }} />
+                          </div>
+                        )}
+                        {addRefRegion && !addRefPreview && (
+                          <span style={{ fontSize: 9, color: colors.text.tertiary, fontFamily: 'Consolas, monospace' }}>
+                            ({addRefRegion.x1},{addRefRegion.y1})~({addRefRegion.x2},{addRefRegion.y2})
+                          </span>
+                        )}
+                      </div>
+                      {/* Name + save */}
+                      <div style={{ display: 'flex', gap: spacing.xs }}>
+                        <input
+                          value={addRefName}
+                          onChange={(e) => setAddRefName(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === 'Enter') saveNewRef() }}
+                          placeholder="이름 (예: ★5, SSR, 레어)"
+                          autoFocus
+                          style={{
+                            flex: 1, padding: '6px 10px', borderRadius: radius.sm,
+                            background: colors.bg.input, border: `1px solid ${colors.border.primary}`,
+                            color: colors.text.primary, fontSize: 11, outline: 'none'
+                          }}
+                        />
+                        <button
+                          onClick={saveNewRef}
+                          disabled={!addRefRegion || !addRefName.trim()}
+                          style={{
+                            padding: '6px 12px', borderRadius: radius.sm, border: 'none',
+                            background: (!addRefRegion || !addRefName.trim()) ? colors.bg.card : STEP_COLORS.ocr,
+                            color: (!addRefRegion || !addRefName.trim()) ? colors.text.tertiary : '#fff',
+                            cursor: (!addRefRegion || !addRefName.trim()) ? 'not-allowed' : 'pointer',
+                            fontSize: 10, fontWeight: 700
+                          }}
+                        >등록</button>
+                        <button onClick={() => {
+                          setShowAddRef(false)
+                          setAddRefRegion(null)
+                          setAddRefName('')
+                          if (addRefPreview) { URL.revokeObjectURL(addRefPreview); setAddRefPreview(null) }
+                        }} style={{
+                          padding: '6px 8px', borderRadius: radius.sm, border: 'none',
+                          background: colors.bg.card, color: colors.text.tertiary,
+                          cursor: 'pointer', fontSize: 10
+                        }}>취소</button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Speed & Repeat */}
           <div style={{
             display: 'flex', gap: spacing.md, padding: `${spacing.sm}px ${spacing.md}px`,
@@ -856,7 +1333,7 @@ export default function MacroSection(): JSX.Element {
             </select>
             <button
               onClick={() => setEditingMacro({ ...editingMacro, runAsAdmin: !editingMacro.runAsAdmin })}
-              title="관리자 권한으로 실행 — 게임이 관리자 권한일 때 필요 (UAC 확인 팝업)"
+              title={adminTaskReady ? '관리자 권한으로 실행 (UAC 없이 자동 실행)' : '관리자 권한으로 실행 — 최초 1회 UAC 확인 후 자동 실행'}
               style={{
                 padding: '3px 8px', borderRadius: radius.sm, border: 'none', cursor: 'pointer',
                 background: editingMacro.runAsAdmin ? 'rgba(255,159,10,0.15)' : colors.bg.input,
@@ -864,7 +1341,7 @@ export default function MacroSection(): JSX.Element {
                 fontSize: 9, fontWeight: 600, transition: transition.fast
               }}
             >
-              {editingMacro.runAsAdmin ? '관리자 ON' : '관리자'}
+              {editingMacro.runAsAdmin ? (adminTaskReady ? '관리자 ✓' : '관리자 ON') : '관리자'}
             </button>
           </div>
 
@@ -970,6 +1447,28 @@ export default function MacroSection(): JSX.Element {
             </div>
           )}
 
+          {execStatus.state === 'ocr-processing' && (
+            <div style={{ textAlign: 'center' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, marginBottom: 8 }}>
+                <Search size={14} style={{ color: STEP_COLORS.ocr }} />
+                <span style={{ fontSize: 12, fontWeight: 600, color: STEP_COLORS.ocr }}>OCR 분석 중</span>
+              </div>
+              <div style={{ fontFamily: 'Consolas, monospace', fontSize: 13, color: colors.text.primary, marginBottom: 6 }}>
+                {execStatus.processed} / {execStatus.total}
+              </div>
+              <div style={{
+                height: 3, borderRadius: 2, background: `${STEP_COLORS.ocr}15`,
+                overflow: 'hidden'
+              }}>
+                <div style={{
+                  height: '100%', borderRadius: 2, background: STEP_COLORS.ocr,
+                  width: `${(execStatus.processed / execStatus.total) * 100}%`,
+                  transition: 'width 200ms ease'
+                }} />
+              </div>
+            </div>
+          )}
+
           {execStatus.state === 'running' && (
             <div>
               <div style={{
@@ -981,6 +1480,22 @@ export default function MacroSection(): JSX.Element {
                   {execStatus.totalRepeat !== 1 && ` · R${execStatus.currentRepeat}/${execStatus.totalRepeat === 0 ? '∞' : execStatus.totalRepeat}`}
                 </span>
               </div>
+              {execStatus.ocrCount !== undefined && execStatus.ocrCount > 0 && (
+                <div style={{
+                  display: 'flex', alignItems: 'center', gap: 6, marginBottom: spacing.sm,
+                  padding: '4px 8px', borderRadius: radius.sm, background: `${STEP_COLORS.ocr}08`
+                }}>
+                  <Search size={10} style={{ color: STEP_COLORS.ocr }} />
+                  <span style={{ fontSize: 10, color: STEP_COLORS.ocr, fontWeight: 600 }}>
+                    OCR 캡처: {execStatus.ocrCount}회
+                  </span>
+                  {execStatus.lastOcr && (
+                    <span style={{ fontSize: 9, color: colors.text.tertiary, marginLeft: 'auto' }}>
+                      직전: {execStatus.lastOcr}
+                    </span>
+                  )}
+                </div>
+              )}
               <div style={{
                 height: 3, borderRadius: 2, background: 'rgba(48,209,88,0.15)',
                 marginBottom: spacing.sm, overflow: 'hidden'
@@ -1003,7 +1518,7 @@ export default function MacroSection(): JSX.Element {
                   marginLeft: 6, padding: '1px 5px', borderRadius: 3, fontSize: 9,
                   background: `${colors.status.error}20`, border: `1px solid ${colors.status.error}30`,
                   fontFamily: 'Consolas, monospace'
-                }}>Win+Space</kbd>
+                }}>Ctrl+Space</kbd>
               </button>
             </div>
           )}
@@ -1042,6 +1557,114 @@ export default function MacroSection(): JSX.Element {
         </div>
       )}
 
+      {/* OCR Result Summary */}
+      {ocrSessionResult && (
+        <div style={{
+          borderRadius: radius.lg, overflow: 'hidden',
+          border: `1px solid ${STEP_COLORS.ocr}25`, marginBottom: spacing.md
+        }}>
+          <div style={{
+            padding: '10px 14px', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            background: `${STEP_COLORS.ocr}08`, borderBottom: `1px solid ${STEP_COLORS.ocr}15`
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <BarChart3 size={13} style={{ color: STEP_COLORS.ocr }} />
+              <span style={{ fontSize: 12, fontWeight: 600, color: STEP_COLORS.ocr }}>OCR 결과</span>
+              <span style={{ fontSize: 10, color: colors.text.tertiary }}>
+                총 {ocrSessionResult.totalRuns}회
+              </span>
+            </div>
+            <button onClick={() => setOcrSessionResult(null)} style={{
+              padding: '1px 5px', borderRadius: 3, border: 'none',
+              background: 'none', color: colors.text.tertiary, cursor: 'pointer', fontSize: 11
+            }}>✕</button>
+          </div>
+          <div style={{ padding: '10px 14px' }}>
+            {Object.entries(ocrSessionResult.summary)
+              .filter(([text]) => text !== '(미등록)')
+              .sort(([, a], [, b]) => b.count - a.count)
+              .map(([text, item]) => {
+                const count = item.count
+                const pct = (item.rate * 100).toFixed(1)
+                const maxCount = Math.max(...Object.entries(ocrSessionResult.summary).filter(([k]) => k !== '(미등록)').map(([, s]) => s.count), 1)
+                return (
+                  <div key={text} style={{
+                    display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6
+                  }}>
+                    <span style={{
+                      fontSize: 11, fontWeight: 600, color: colors.text.primary,
+                      minWidth: 80, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'
+                    }}>{text}</span>
+                    <div style={{
+                      flex: 1, height: 6, borderRadius: 3,
+                      background: `${STEP_COLORS.ocr}10`, overflow: 'hidden'
+                    }}>
+                      <div style={{
+                        height: '100%', borderRadius: 3, background: STEP_COLORS.ocr,
+                        width: `${(count / maxCount) * 100}%`, transition: 'width 300ms ease'
+                      }} />
+                    </div>
+                    <span style={{
+                      fontFamily: 'Consolas, monospace', fontSize: 10,
+                      color: colors.text.secondary, minWidth: 55, textAlign: 'right'
+                    }}>{count}회 {pct}%</span>
+                  </div>
+                )
+              })}
+            {ocrSessionResult.summary['(미등록)'] && (
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 8, marginTop: 4, paddingTop: 6,
+                borderTop: `1px dashed ${colors.border.primary}`
+              }}>
+                <span style={{
+                  fontSize: 10, color: colors.text.tertiary, minWidth: 80
+                }}>(미등록)</span>
+                <span style={{
+                  fontFamily: 'Consolas, monospace', fontSize: 10,
+                  color: colors.text.tertiary
+                }}>{ocrSessionResult.summary['(미등록)'].count}회 — 집계 제외</span>
+              </div>
+            )}
+          </div>
+          <div style={{
+            display: 'flex', gap: 4, padding: '8px 14px',
+            borderTop: `1px solid ${STEP_COLORS.ocr}10`
+          }}>
+            <button onClick={() => {
+              const text = Object.entries(ocrSessionResult.summary)
+                .sort(([, a], [, b]) => b.count - a.count)
+                .map(([t, s]) => `${t}: ${s.count}회 (${(s.rate * 100).toFixed(1)}%)`)
+                .join('\n')
+              navigator.clipboard.writeText(`총 ${ocrSessionResult.totalRuns}회\n${text}`)
+              showStatusMsg('클립보드 복사됨')
+            }} style={{
+              flex: 1, padding: '6px', borderRadius: radius.sm, border: 'none',
+              background: `${STEP_COLORS.ocr}10`, color: STEP_COLORS.ocr,
+              cursor: 'pointer', fontSize: 10, fontWeight: 600,
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 3
+            }}>
+              <Clipboard size={10} /> 복사
+            </button>
+            <button onClick={() => window.api.exportOcrSession(ocrSessionResult.id)} style={{
+              flex: 1, padding: '6px', borderRadius: radius.sm, border: 'none',
+              background: `${STEP_COLORS.ocr}10`, color: STEP_COLORS.ocr,
+              cursor: 'pointer', fontSize: 10, fontWeight: 600,
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 3
+            }}>
+              <FileJson size={10} /> JSON
+            </button>
+            <button onClick={() => window.api.openStreamlitOcr(ocrSessionResult.id)} style={{
+              flex: 1, padding: '6px', borderRadius: radius.sm, border: 'none',
+              background: `${STEP_COLORS.ocr}10`, color: STEP_COLORS.ocr,
+              cursor: 'pointer', fontSize: 10, fontWeight: 600,
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 3
+            }}>
+              <BarChart3 size={10} /> Streamlit
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Hint */}
       {!editingMacro && !isExecuting && (
         <div style={{ textAlign: 'center', fontSize: 10, color: colors.text.tertiary, padding: spacing.sm }}>
@@ -1049,7 +1672,7 @@ export default function MacroSection(): JSX.Element {
             padding: '1px 5px', borderRadius: 3, fontSize: 9,
             background: colors.bg.input, border: `1px solid ${colors.border.primary}`,
             fontFamily: 'Consolas, monospace'
-          }}>Win+Space</kbd> 긴급 정지 · 마우스→(0,0) 페일세이프
+          }}>Ctrl+Space</kbd> 긴급 정지 · 마우스→(0,0) 페일세이프
         </div>
       )}
 

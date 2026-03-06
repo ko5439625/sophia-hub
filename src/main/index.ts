@@ -18,6 +18,7 @@ import { SkillsService } from './services/skillsService'
 import { LaunchService } from './services/launchService'
 import { GitService } from './services/gitService'
 import { StoreService } from './services/storeService'
+import { ImageMatchService } from './services/imageMatchService'
 
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
@@ -25,6 +26,7 @@ const skillsService = new SkillsService()
 const launchService = new LaunchService()
 const gitService = new GitService()
 const storeService = new StoreService()
+const matchService = new ImageMatchService()
 
 // 이미지 저장 폴더
 const IMAGE_DIR = join(homedir(), '.claude', 'images')
@@ -46,6 +48,9 @@ let pathRecordingStart = 0
 let macroProcess: ChildProcess | null = null
 let macroStatusInterval: ReturnType<typeof setInterval> | null = null
 let macroFailsafeInterval: ReturnType<typeof setInterval> | null = null
+let macroRunningViaTask = false
+const ADMIN_TASK_NAME = 'SophiaHubMacroAdmin'
+let fullRecProcess: ChildProcess | null = null
 
 function createWindow(): void {
   const display = screen.getPrimaryDisplay()
@@ -373,6 +378,29 @@ function setupIPC(): void {
     if (existsSync(filePath) && filePath.startsWith(MACROS_DIR)) {
       unlinkSync(filePath)
     }
+  })
+
+  ipcMain.handle('copy-macro-refs', (_e, srcMacroId: string, dstMacroId: string) => {
+    const REFS_DIR = join(homedir(), '.claude', 'match-refs')
+    const srcDir = join(REFS_DIR, srcMacroId)
+    const dstDir = join(REFS_DIR, dstMacroId)
+    if (!existsSync(srcDir)) return false
+    if (!existsSync(dstDir)) mkdirSync(dstDir, { recursive: true })
+    try {
+      const { copyFileSync } = require('fs')
+      const refsJsonPath = join(srcDir, 'refs.json')
+      if (!existsSync(refsJsonPath)) return false
+      const refs = JSON.parse(readFileSync(refsJsonPath, 'utf-8'))
+      const newRefs = refs.map((ref: { id: string; name: string; imagePath: string }) => {
+        const srcImgPath = ref.imagePath
+        const fileName = srcImgPath.split(/[\\/]/).pop() || ref.id + '.png'
+        const dstImgPath = join(dstDir, fileName)
+        if (existsSync(srcImgPath)) copyFileSync(srcImgPath, dstImgPath)
+        return { ...ref, imagePath: dstImgPath }
+      })
+      writeFileSync(join(dstDir, 'refs.json'), JSON.stringify(newRefs, null, 2))
+      return true
+    } catch { return false }
   })
 
   // Cursor polling
@@ -901,11 +929,11 @@ window._stopRec=function(){
   // Macro execution
   type MacroStepType =
     | { type: 'path'; points: Array<{ t: number; x: number; y: number }>; duration: number }
-    | { type: 'click'; x: number; y: number; button: 'left' | 'right' }
+    | { type: 'click'; x: number; y: number; button: 'left' | 'right'; retry?: { region: { x1: number; y1: number; x2: number; y2: number }; maxRetries: number; delay: number } }
     | { type: 'move'; x: number; y: number }
     | { type: 'direction'; dir: 'left' | 'right' | 'up' | 'down'; speed: number; duration: number }
     | { type: 'text'; value: string }
-    | { type: 'key'; keys: string[] }
+    | { type: 'key'; keys: string[]; repeat?: number; duration?: number; interval?: number }
     | { type: 'wait'; ms: number; random?: boolean; min?: number; max?: number }
 
   type MacroType = {
@@ -1028,6 +1056,14 @@ window._stopRec=function(){
     lines.push('    Thread.Sleep(30); KU(0x12);')
     lines.push('  }')
     lines.push('')
+    lines.push('  // Relative mouse move — for game camera control')
+    lines.push('  public static void MoveRel(int dx, int dy) {')
+    lines.push('    var i = new INPUT[1];')
+    lines.push('    i[0].type = 0; i[0].u.mi.dx = dx; i[0].u.mi.dy = dy;')
+    lines.push('    i[0].u.mi.dwFlags = 0x0001;')
+    lines.push('    SendInput(1, i, SZ);')
+    lines.push('  }')
+    lines.push('')
     lines.push('  // Absolute mouse — move+click in single SendInput call')
     lines.push('  [DllImport("user32.dll")] public static extern int GetSystemMetrics(int i);')
     lines.push('  public static void AbsClick(int x, int y, bool right) {')
@@ -1048,6 +1084,13 @@ window._stopRec=function(){
     // Progress file path
     const progressFile = join(MACROS_DIR, '_progress.txt').replace(/\\/g, '\\\\')
     lines.push(`$progressFile = "${progressFile}"`)
+
+    // OCR: System.Drawing for screenshot capture
+    const hasOcrSteps = macro.steps.some((s: { type: string }) => s.type === 'ocr')
+    if (hasOcrSteps) {
+      lines.push(`Add-Type -AssemblyName System.Drawing`)
+      lines.push(`$ocrIdx = 0`)
+    }
 
     // Game mode: alt-hold → Alt 누른 상태 유지
     const gm = macro.gameMode || 'off'
@@ -1091,14 +1134,46 @@ window._stopRec=function(){
           break
         case 'click': {
           const isRight = step.button === 'right' ? '$true' : '$false'
-          if (gm === 'postmsg') {
-            lines.push(`  [GI]::WMClick(${step.x}, ${step.y}, ${isRight})`)
-          } else if (gm === 'alt-click') {
-            lines.push(`  [GI]::AltClick(${step.x}, ${step.y}, ${isRight})`)
-          } else if (gm === 'abs-input') {
-            lines.push(`  [GI]::AbsClick(${step.x}, ${step.y}, ${isRight})`)
+          const clickCmd = gm === 'postmsg' ? `[GI]::WMClick(${step.x}, ${step.y}, ${isRight})`
+            : gm === 'alt-click' ? `[GI]::AltClick(${step.x}, ${step.y}, ${isRight})`
+            : gm === 'abs-input' ? `[GI]::AbsClick(${step.x}, ${step.y}, ${isRight})`
+            : `[GI]::Click(${step.x}, ${step.y}, ${isRight})`
+
+          if (step.retry) {
+            const r = step.retry
+            const rw = r.region.x2 - r.region.x1
+            const rh = r.region.y2 - r.region.y1
+            lines.push(`  # Click with retry (check region ${r.region.x1},${r.region.y1} ${rw}x${rh})`)
+            lines.push(`  for ($rt = 0; $rt -lt ${r.maxRetries}; $rt++) {`)
+            // Capture before
+            lines.push(`    $bmpBefore = New-Object System.Drawing.Bitmap(${rw}, ${rh})`)
+            lines.push(`    $gfxBefore = [System.Drawing.Graphics]::FromImage($bmpBefore)`)
+            lines.push(`    $gfxBefore.CopyFromScreen(${r.region.x1}, ${r.region.y1}, 0, 0, $bmpBefore.Size)`)
+            lines.push(`    $gfxBefore.Dispose()`)
+            // Click
+            lines.push(`    ${clickCmd}`)
+            lines.push(`    Start-Sleep -Milliseconds ${r.delay}`)
+            // Capture after
+            lines.push(`    $bmpAfter = New-Object System.Drawing.Bitmap(${rw}, ${rh})`)
+            lines.push(`    $gfxAfter = [System.Drawing.Graphics]::FromImage($bmpAfter)`)
+            lines.push(`    $gfxAfter.CopyFromScreen(${r.region.x1}, ${r.region.y1}, 0, 0, $bmpAfter.Size)`)
+            lines.push(`    $gfxAfter.Dispose()`)
+            // Compare pixels (sample every 4th pixel for speed)
+            lines.push(`    $diffCount = 0; $sampleCount = 0`)
+            lines.push(`    for ($py = 0; $py -lt ${rh}; $py += 2) {`)
+            lines.push(`      for ($px = 0; $px -lt ${rw}; $px += 2) {`)
+            lines.push(`        $c1 = $bmpBefore.GetPixel($px, $py)`)
+            lines.push(`        $c2 = $bmpAfter.GetPixel($px, $py)`)
+            lines.push(`        $sampleCount++`)
+            lines.push(`        if ([Math]::Abs($c1.R - $c2.R) -gt 30 -or [Math]::Abs($c1.G - $c2.G) -gt 30 -or [Math]::Abs($c1.B - $c2.B) -gt 30) { $diffCount++ }`)
+            lines.push(`      }`)
+            lines.push(`    }`)
+            lines.push(`    $bmpBefore.Dispose(); $bmpAfter.Dispose()`)
+            lines.push(`    $diffPct = $diffCount / [Math]::Max(1, $sampleCount)`)
+            lines.push(`    if ($diffPct -gt 0.05) { break }`) // 5% 이상 변화 → 성공
+            lines.push(`  }`)
           } else {
-            lines.push(`  [GI]::Click(${step.x}, ${step.y}, ${isRight})`)
+            lines.push(`  ${clickCmd}`)
           }
           break
         }
@@ -1109,7 +1184,6 @@ window._stopRec=function(){
         case 'direction': {
           const dx = step.dir === 'right' ? step.speed : step.dir === 'left' ? -step.speed : 0
           const dy = step.dir === 'down' ? step.speed : step.dir === 'up' ? -step.speed : 0
-          lines.push(`  Add-Type -AssemblyName System.Windows.Forms`)
           if (step.duration > 0) {
             const dur = Math.round(step.duration * speedFactor)
             lines.push(`  $dirStart = [DateTime]::Now`)
@@ -1117,8 +1191,7 @@ window._stopRec=function(){
           } else {
             lines.push(`  while ($true) {`)
           }
-          lines.push(`    $p = [System.Windows.Forms.Cursor]::Position`)
-          lines.push(`    [GI]::SetCursorPos($p.X + (${dx}), $p.Y + (${dy}))`)
+          lines.push(`    [GI]::MoveRel(${dx}, ${dy})`)
           lines.push(`    Start-Sleep -Milliseconds 16`)
           lines.push(`  }`)
           break
@@ -1132,12 +1205,31 @@ window._stopRec=function(){
         case 'key': {
           // SendInput scan code — key down in order, up in reverse
           const vks = step.keys.map(k => VK_CODES[k.toLowerCase()] || '0x00')
-          for (const vk of vks) {
-            lines.push(`  [GI]::KD(${vk})`)
+          const intv = step.interval || 100
+          const keyPress = (): void => {
+            for (const vk of vks) lines.push(`    [GI]::KD(${vk})`)
+            lines.push(`    Start-Sleep -Milliseconds 50`)
+            for (const vk of [...vks].reverse()) lines.push(`    [GI]::KU(${vk})`)
           }
-          lines.push(`  Start-Sleep -Milliseconds 50`)
-          for (const vk of [...vks].reverse()) {
-            lines.push(`  [GI]::KU(${vk})`)
+          if (step.duration && step.duration > 0) {
+            // 지속 시간 모드
+            const dur = Math.round(step.duration * speedFactor)
+            lines.push(`  $keyStart = [DateTime]::Now`)
+            lines.push(`  while (([DateTime]::Now - $keyStart).TotalMilliseconds -lt ${dur}) {`)
+            keyPress()
+            lines.push(`    Start-Sleep -Milliseconds ${intv}`)
+            lines.push(`  }`)
+          } else if (step.repeat && step.repeat > 1) {
+            // 반복 횟수 모드
+            lines.push(`  for ($k = 0; $k -lt ${step.repeat}; $k++) {`)
+            keyPress()
+            lines.push(`    Start-Sleep -Milliseconds ${intv}`)
+            lines.push(`  }`)
+          } else {
+            // 1회 (기존)
+            for (const vk of vks) lines.push(`  [GI]::KD(${vk})`)
+            lines.push(`  Start-Sleep -Milliseconds 50`)
+            for (const vk of [...vks].reverse()) lines.push(`  [GI]::KU(${vk})`)
           }
           break
         }
@@ -1150,6 +1242,23 @@ window._stopRec=function(){
           } else {
             const waitMs = Math.max(1, Math.round(step.ms * speedFactor))
             lines.push(`  Start-Sleep -Milliseconds ${waitMs}`)
+          }
+          break
+        }
+        case 'ocr': {
+          const capturesDir = matchService.getCapturesDir()
+          if (capturesDir) {
+            const dir = capturesDir.replace(/\\/g, '\\\\')
+            lines.push(`  # OCR Capture: "${step.label}"`)
+            lines.push(`  $ocrIdx++`)
+            lines.push(`  $ocrFile = "${dir}\\\\" + $ocrIdx.ToString("D4") + ".png"`)
+            lines.push(`  $ocrBmp = New-Object System.Drawing.Bitmap(${step.region.x2 - step.region.x1}, ${step.region.y2 - step.region.y1})`)
+            lines.push(`  $ocrGfx = [System.Drawing.Graphics]::FromImage($ocrBmp)`)
+            lines.push(`  $ocrGfx.CopyFromScreen(${step.region.x1}, ${step.region.y1}, 0, 0, $ocrBmp.Size)`)
+            lines.push(`  $ocrGfx.Dispose()`)
+            lines.push(`  $ocrBmp.Save($ocrFile, [System.Drawing.Imaging.ImageFormat]::Png)`)
+            lines.push(`  $ocrBmp.Dispose()`)
+            lines.push(`  Set-Content $progressFile "running|$stepIdx|$totalSteps|$r|$totalRepeat|ocr|$ocrIdx"`)
           }
           break
         }
@@ -1178,7 +1287,7 @@ window._stopRec=function(){
       macroFailsafeInterval = null
     }
     // Unregister emergency stop shortcut
-    try { globalShortcut.unregister('Super+Space') } catch { /* ignore */ }
+    try { globalShortcut.unregister('Ctrl+Space') } catch { /* ignore */ }
     // Clean up temp files
     const scriptPath = join(MACROS_DIR, '_running.ps1')
     const progressPath = join(MACROS_DIR, '_progress.txt')
@@ -1193,10 +1302,76 @@ window._stopRec=function(){
       } catch { /* ignore */ }
       macroProcess = null
     }
+    if (macroRunningViaTask) {
+      try { execSync(`schtasks /end /tn "${ADMIN_TASK_NAME}"`, { stdio: 'ignore' }) } catch { /* ignore */ }
+      macroRunningViaTask = false
+    }
   }
 
-  ipcMain.handle('execute-macro', (_e, macro: MacroType) => {
-    if (macroProcess) return // Already running
+  // --- Admin Task Scheduler (UAC-free admin execution) ---
+  function adminTaskExists(): boolean {
+    try {
+      execSync(`schtasks /query /tn "${ADMIN_TASK_NAME}"`, { stdio: 'ignore' })
+      return true
+    } catch { return false }
+  }
+
+  async function setupAdminTask(): Promise<boolean> {
+    const scriptPath = join(MACROS_DIR, '_running.ps1')
+    const setupScript = [
+      `$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-WindowStyle Hidden -ExecutionPolicy Bypass -File "${scriptPath}"'`,
+      `$principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -RunLevel Highest`,
+      `Register-ScheduledTask -TaskName '${ADMIN_TASK_NAME}' -Action $action -Principal $principal -Force`
+    ].join('\r\n')
+    const setupPath = join(MACROS_DIR, '_setup_admin.ps1')
+    writeFileSync(setupPath, '\ufeff' + setupScript, 'utf-8')
+
+    return new Promise((resolve) => {
+      const wrapperCmd = `Start-Process powershell.exe -Verb RunAs -ArgumentList '-ExecutionPolicy','Bypass','-File','${setupPath.replace(/'/g, "''")}' -Wait`
+      const proc = spawn('powershell.exe', ['-ExecutionPolicy', 'Bypass', '-Command', wrapperCmd], {
+        stdio: 'ignore',
+        windowsHide: true
+      })
+      proc.on('exit', () => {
+        try { unlinkSync(setupPath) } catch { /* ignore */ }
+        resolve(adminTaskExists())
+      })
+      proc.on('error', () => resolve(false))
+    })
+  }
+
+  ipcMain.handle('check-admin-task', () => adminTaskExists())
+  ipcMain.handle('setup-admin-task', () => setupAdminTask())
+
+  ipcMain.handle('execute-macro', async (_e, macro: MacroType) => {
+    if (macroProcess || macroRunningViaTask) return
+
+    // Pre-flight: Task Scheduler 설정
+    let useTaskScheduler = false
+    if (macro.runAsAdmin) {
+      // Re-register task to ensure -WindowStyle Hidden is applied
+      const needsSetup = !adminTaskExists()
+      // Also check if task needs update (one-time migration flag)
+      const migrationKey = 'admin_task_v2_hidden'
+      const migrated = storeService.get(migrationKey) === true
+      if (needsSetup || !migrated) {
+        await setupAdminTask()
+        storeService.set(migrationKey, true)
+      }
+      useTaskScheduler = adminTaskExists()
+    }
+
+    // Image match session setup
+    const matchStep = macro.steps.find((s: { type: string }) => s.type === 'ocr') as { type: 'ocr'; region: { x1: number; y1: number; x2: number; y2: number }; grid?: { rows: number; cols: number }; threshold?: number; matchMode?: 'resize' | 'template' } | undefined
+    const macroHasOcr = !!matchStep
+    if (macroHasOcr) {
+      const grid = matchStep!.grid || { rows: 1, cols: 1 }
+      const slotsPerRun = grid.rows * grid.cols
+      const matchMode = matchStep!.matchMode || 'resize'
+      matchService.createSession(macro.id, macro.name, slotsPerRun, matchMode as 'resize' | 'template', matchStep!.region, grid)
+      // Preload reference images for fast matching
+      matchService.preloadRefs(macro.id, matchMode as 'resize' | 'template')
+    }
 
     const script = generateMacroScript(macro)
     const scriptPath = join(MACROS_DIR, '_running.ps1')
@@ -1228,9 +1403,26 @@ window._stopRec=function(){
         // Hide window and start execution
         mainWindow?.hide()
 
-        if (macro.runAsAdmin) {
-          // 관리자 권한: wrapper 스크립트로 UAC 승인 후 실행
-          const wrapperScript = `Start-Process powershell.exe -Verb RunAs -ArgumentList '-ExecutionPolicy','Bypass','-File','${scriptPath.replace(/'/g, "''")}' -Wait`
+        if (macro.runAsAdmin && useTaskScheduler) {
+          // Task Scheduler 방식: UAC 없이 관리자 실행
+          try {
+            execSync(`schtasks /run /tn "${ADMIN_TASK_NAME}"`, { stdio: 'ignore' })
+            macroRunningViaTask = true
+            console.log('[MACRO] Started via Task Scheduler (no UAC)')
+          } catch {
+            // Fallback: 기존 UAC 방식
+            console.log('[MACRO] Task Scheduler failed, falling back to UAC')
+            const wrapperScript = `Start-Process powershell.exe -Verb RunAs -WindowStyle Hidden -ArgumentList '-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-File','${scriptPath.replace(/'/g, "''")}' -Wait`
+            const wrapperPath = join(MACROS_DIR, '_admin_wrapper.ps1')
+            writeFileSync(wrapperPath, '\ufeff' + wrapperScript, 'utf-8')
+            macroProcess = spawn('powershell.exe', ['-ExecutionPolicy', 'Bypass', '-File', wrapperPath], {
+              stdio: ['ignore', 'pipe', 'pipe'],
+              windowsHide: true
+            })
+          }
+        } else if (macro.runAsAdmin) {
+          // Fallback: 기존 UAC 방식
+          const wrapperScript = `Start-Process powershell.exe -Verb RunAs -WindowStyle Hidden -ArgumentList '-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-File','${scriptPath.replace(/'/g, "''")}' -Wait`
           const wrapperPath = join(MACROS_DIR, '_admin_wrapper.ps1')
           writeFileSync(wrapperPath, '\ufeff' + wrapperScript, 'utf-8')
           macroProcess = spawn('powershell.exe', ['-ExecutionPolicy', 'Bypass', '-File', wrapperPath], {
@@ -1243,12 +1435,14 @@ window._stopRec=function(){
             windowsHide: true
           })
         }
-        macroProcess.stdout?.on('data', (d: Buffer) => console.log('[MACRO]', d.toString()))
-        macroProcess.stderr?.on('data', (d: Buffer) => console.error('[MACRO ERR]', d.toString()))
+        if (macroProcess) {
+          macroProcess.stdout?.on('data', (d: Buffer) => console.log('[MACRO]', d.toString()))
+          macroProcess.stderr?.on('data', (d: Buffer) => console.error('[MACRO ERR]', d.toString()))
+        }
 
         // Register emergency stop: Win+Space
         try {
-          globalShortcut.register('Super+Space', () => {
+          globalShortcut.register('Ctrl+Space', () => {
             killMacroProcess()
             cleanupMacroExecution()
             mainWindow?.show()
@@ -1276,32 +1470,68 @@ window._stopRec=function(){
             const content = readFileSync(progressPath, 'utf-8').trim()
             const parts = content.split('|')
             if (parts[0] === 'running') {
+              const ocrCount = parts[5] === 'ocr' ? parseInt(parts[6]) || 0 : undefined
               sendStatus({
                 state: 'running',
                 currentStep: parseInt(parts[1]) || 1,
                 totalSteps: parseInt(parts[2]) || 1,
                 currentRepeat: parseInt(parts[3]) || 1,
-                totalRepeat: parseInt(parts[4]) || 1
+                totalRepeat: parseInt(parts[4]) || 1,
+                ocrCount
               })
+            } else if (parts[0] === 'stopped' && macroRunningViaTask) {
+              // Task Scheduler 실행 완료 감지
+              macroRunningViaTask = false
+              handleMacroComplete('completed')
             }
           } catch { /* ignore */ }
         }, 200)
 
-        macroProcess.on('exit', () => {
-          macroProcess = null
+        // Image match post-processing helper
+        const handleMacroComplete = async (reason: string, error?: string): Promise<void> => {
           cleanupMacroExecution()
           mainWindow?.show()
           mainWindow?.focus()
-          sendStatus({ state: 'stopped', reason: 'completed' })
-        })
 
-        macroProcess.on('error', (err) => {
-          macroProcess = null
-          cleanupMacroExecution()
-          mainWindow?.show()
-          mainWindow?.focus()
-          sendStatus({ state: 'stopped', reason: 'error', error: err.message })
-        })
+          if (macroHasOcr && reason === 'completed' && matchStep) {
+            const capturesDir = matchService.getCapturesDir()
+            const files = capturesDir && existsSync(capturesDir)
+              ? readdirSync(capturesDir).filter(f => f.endsWith('.png')).sort()
+              : []
+
+            if (files.length > 0) {
+              const grid = matchStep.grid || { rows: 1, cols: 1 }
+              const threshold = matchStep.threshold || 0.85
+
+              sendStatus({ state: 'ocr-processing', processed: 0, total: files.length })
+              const session = await matchService.processAll(
+                matchStep.region, grid, threshold, 0,
+                (processed, total) => {
+                  sendStatus({ state: 'ocr-processing', processed, total })
+                }
+              )
+              sendStatus({ state: 'stopped', reason: 'completed', ocrSession: session || undefined })
+            } else {
+              sendStatus({ state: 'stopped', reason: 'completed' })
+            }
+            matchService.clearCurrentSession()
+          } else {
+            matchService.clearCurrentSession()
+            sendStatus({ state: 'stopped', reason, error })
+          }
+        }
+
+        if (macroProcess) {
+          macroProcess.on('exit', () => {
+            macroProcess = null
+            handleMacroComplete('completed')
+          })
+
+          macroProcess.on('error', (err) => {
+            macroProcess = null
+            handleMacroComplete('error', err.message)
+          })
+        }
       }
     }, 1000)
   })
@@ -1312,6 +1542,462 @@ window._stopRec=function(){
     mainWindow?.show()
     mainWindow?.focus()
     mainWindow?.webContents.send('macro-status', { state: 'stopped', reason: 'emergency' })
+  })
+
+  // --- OCR ---
+  ipcMain.handle('pick-ocr-region', async () => {
+    return new Promise((resolve) => {
+      if (!mainWindow) { resolve(null); return }
+      mainWindow.hide()
+
+      // Calculate virtual screen bounds across all monitors
+      const displays = screen.getAllDisplays()
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+      for (const d of displays) {
+        minX = Math.min(minX, d.bounds.x)
+        minY = Math.min(minY, d.bounds.y)
+        maxX = Math.max(maxX, d.bounds.x + d.bounds.width)
+        maxY = Math.max(maxY, d.bounds.y + d.bounds.height)
+      }
+      const totalW = maxX - minX
+      const totalH = maxY - minY
+
+      // Monitor info for display in overlay
+      const monitorInfo = displays.map((d, i) => ({
+        i: i + 1, x: d.bounds.x - minX, y: d.bounds.y - minY,
+        w: d.bounds.width, h: d.bounds.height,
+        primary: d.id === screen.getPrimaryDisplay().id
+      }))
+
+      const overlayWin = new BrowserWindow({
+        x: minX, y: minY,
+        width: totalW, height: totalH,
+        transparent: true, frame: false, alwaysOnTop: true,
+        skipTaskbar: true, resizable: false,
+        webPreferences: { nodeIntegration: false, contextIsolation: true }
+      })
+      overlayWin.setAlwaysOnTop(true, 'screen-saver')
+
+      const html = `<!DOCTYPE html>
+<html><head><style>
+* { margin:0; padding:0; }
+body { cursor: crosshair; overflow: hidden; }
+canvas { position: fixed; top: 0; left: 0; }
+.info { position: fixed; top: 20px; left: 50%; transform: translateX(-50%);
+  background: rgba(0,0,0,0.85); color: #0A84FF; padding: 10px 20px;
+  border-radius: 8px; font: 600 14px system-ui; pointer-events: none; z-index: 10;
+  white-space: nowrap; }
+</style></head><body>
+<div class="info">OCR 영역을 드래그로 선택하세요 (ESC 취소) · ${displays.length}개 모니터</div>
+<canvas id="c"></canvas>
+<script>
+const c = document.getElementById('c'), ctx = c.getContext('2d');
+c.width = ${totalW}; c.height = ${totalH};
+const monitors = ${JSON.stringify(monitorInfo)};
+const offsetX = ${minX}, offsetY = ${minY};
+let drawing = false, sx = 0, sy = 0, ex = 0, ey = 0;
+
+function draw() {
+  ctx.clearRect(0, 0, c.width, c.height);
+  ctx.fillStyle = 'rgba(0,0,0,0.3)';
+  ctx.fillRect(0, 0, c.width, c.height);
+  // Draw monitor borders
+  monitors.forEach(m => {
+    ctx.strokeStyle = 'rgba(255,255,255,0.15)'; ctx.lineWidth = 1;
+    ctx.strokeRect(m.x, m.y, m.w, m.h);
+    ctx.fillStyle = 'rgba(255,255,255,0.06)';
+    ctx.font = '11px Consolas'; ctx.fillText('Monitor ' + m.i + (m.primary ? ' (주)' : ''), m.x + 8, m.y + 20);
+  });
+  if (drawing) {
+    const x = Math.min(sx, ex), y = Math.min(sy, ey);
+    const w = Math.abs(ex - sx), h = Math.abs(ey - sy);
+    ctx.clearRect(x, y, w, h);
+    ctx.strokeStyle = '#0A84FF'; ctx.lineWidth = 2;
+    ctx.strokeRect(x, y, w, h);
+    ctx.fillStyle = 'rgba(10,132,255,0.1)';
+    ctx.fillRect(x, y, w, h);
+    ctx.fillStyle = '#0A84FF'; ctx.font = '12px Consolas';
+    ctx.fillText(w + ' x ' + h + ' · (' + (x + offsetX) + ',' + (y + offsetY) + ')~(' + (x + w + offsetX) + ',' + (y + h + offsetY) + ')', x + 4, y - 6);
+  }
+}
+draw();
+
+c.addEventListener('mousedown', e => { drawing = true; sx = e.clientX; sy = e.clientY; });
+c.addEventListener('mousemove', e => { if (drawing) { ex = e.clientX; ey = e.clientY; draw(); } });
+c.addEventListener('mouseup', e => {
+  ex = e.clientX; ey = e.clientY;
+  const region = {
+    x1: Math.min(sx, ex) + offsetX, y1: Math.min(sy, ey) + offsetY,
+    x2: Math.max(sx, ex) + offsetX, y2: Math.max(sy, ey) + offsetY
+  };
+  if (Math.abs(region.x2 - region.x1) > 5 && Math.abs(region.y2 - region.y1) > 5) {
+    document.title = 'RESULT:' + JSON.stringify(region);
+  }
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') document.title = 'CANCELLED';
+});
+</script></body></html>`
+
+      overlayWin.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
+
+      const checkTitle = setInterval(() => {
+        try {
+          const title = overlayWin.getTitle()
+          if (title.startsWith('RESULT:')) {
+            clearInterval(checkTitle)
+            const region = JSON.parse(title.replace('RESULT:', ''))
+            overlayWin.close()
+            mainWindow?.show()
+            resolve(region)
+          } else if (title === 'CANCELLED') {
+            clearInterval(checkTitle)
+            overlayWin.close()
+            mainWindow?.show()
+            resolve(null)
+          }
+        } catch { /* ignore */ }
+      }, 100)
+
+      overlayWin.on('closed', () => {
+        clearInterval(checkTitle)
+        mainWindow?.show()
+      })
+    })
+  })
+
+  // Match sessions CRUD
+  ipcMain.handle('get-ocr-sessions', () => matchService.getSessions())
+  ipcMain.handle('get-ocr-session', (_e, id: string) => matchService.getSession(id))
+  ipcMain.handle('delete-ocr-session', (_e, id: string) => matchService.deleteSession(id))
+  ipcMain.handle('export-ocr-session', (_e, id: string) => matchService.exportSession(id))
+  ipcMain.handle('open-streamlit-ocr', async (_e, sessionId: string) => {
+    const session = matchService.getSession(sessionId)
+    if (!session) {
+      console.error('[STREAMLIT] Session not found:', sessionId)
+      return
+    }
+    const sessionsDir = matchService.getSessionsDir()
+    const analyzerPath = join(homedir(), '.claude', 'match-analyzer.py')
+    const sessionPath = join(sessionsDir, sessionId, 'session.json')
+    console.log('[STREAMLIT] Launching:', analyzerPath, 'session:', sessionPath)
+
+    // Check if port 8510 is already in use
+    const portInUse = await new Promise<boolean>((resolve) => {
+      const { createConnection } = require('net')
+      const sock = createConnection({ port: 8510, host: '127.0.0.1' })
+      sock.once('connect', () => { sock.destroy(); resolve(true) })
+      sock.once('error', () => { resolve(false) })
+    })
+
+    if (portInUse) {
+      console.log('[STREAMLIT] Port 8510 already in use, killing existing process')
+      try {
+        execSync('powershell -Command "Get-NetTCPConnection -LocalPort 8510 -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }"')
+        // Wait for port to free up
+        await new Promise(r => setTimeout(r, 2000))
+      } catch { /* ignore */ }
+    }
+
+    // Spawn streamlit directly (avoid cmd quoting issues)
+    // --server.port must come BEFORE '--' (streamlit args before app args)
+    spawn('streamlit', [
+      'run', analyzerPath,
+      '--server.port', '8510',
+      '--server.headless', 'true',
+      '--', '--session', sessionPath
+    ], {
+      detached: true, stdio: 'ignore',
+      shell: true,
+      env: { ...process.env }
+    })
+
+    // Open browser after delay
+    setTimeout(() => {
+      shell.openExternal('http://localhost:8510')
+    }, 4000)
+  })
+
+  // Capture a screen region and return PNG buffer (for reference image registration)
+  ipcMain.handle('capture-region-buffer', async (_e, region: { x1: number; y1: number; x2: number; y2: number }) => {
+    try {
+      const sources = await desktopCapturer.getSources({
+        types: ['screen'],
+        thumbnailSize: { width: 1, height: 1 }
+      })
+      // Find the display containing the region center
+      const cx = (region.x1 + region.x2) / 2
+      const cy = (region.y1 + region.y2) / 2
+      const displays = screen.getAllDisplays()
+      const targetDisplay = displays.find(d =>
+        cx >= d.bounds.x && cx < d.bounds.x + d.bounds.width &&
+        cy >= d.bounds.y && cy < d.bounds.y + d.bounds.height
+      ) || screen.getPrimaryDisplay()
+
+      // Get full screenshot of the target display
+      const source = sources.find(s => {
+        const displayId = s.display_id
+        return displayId === String(targetDisplay.id)
+      }) || sources[0]
+
+      if (!source) return null
+
+      const fullSources = await desktopCapturer.getSources({
+        types: ['screen'],
+        thumbnailSize: { width: targetDisplay.bounds.width * targetDisplay.scaleFactor, height: targetDisplay.bounds.height * targetDisplay.scaleFactor }
+      })
+      const fullSource = fullSources.find(s => s.display_id === String(targetDisplay.id)) || fullSources[0]
+      if (!fullSource) return null
+
+      const fullImg = fullSource.thumbnail
+      if (fullImg.isEmpty()) return null
+
+      // Calculate crop coordinates relative to the display
+      const sf = targetDisplay.scaleFactor
+      const cropX = Math.round((region.x1 - targetDisplay.bounds.x) * sf)
+      const cropY = Math.round((region.y1 - targetDisplay.bounds.y) * sf)
+      const cropW = Math.round((region.x2 - region.x1) * sf)
+      const cropH = Math.round((region.y2 - region.y1) * sf)
+
+      const cropped = fullImg.crop({
+        x: Math.max(0, cropX),
+        y: Math.max(0, cropY),
+        width: Math.max(1, cropW),
+        height: Math.max(1, cropH)
+      })
+      return cropped.toPNG()
+    } catch (err) {
+      console.error('[capture-region-buffer]', err)
+      return null
+    }
+  })
+
+  // Reference image management
+  ipcMain.handle('get-match-refs', (_e, macroId: string) => matchService.getRefs(macroId))
+  ipcMain.handle('save-match-ref', (_e, macroId: string, name: string, imagePath: string) =>
+    matchService.saveRef(macroId, name, imagePath))
+  ipcMain.handle('save-match-ref-buffer', async (_e, macroId: string, name: string, buffer: ArrayBuffer) =>
+    matchService.saveRefFromBuffer(macroId, name, Buffer.from(buffer)))
+  ipcMain.handle('delete-match-ref', (_e, macroId: string, refId: string) =>
+    matchService.deleteRef(macroId, refId))
+
+  // --- Full Recording (Beta): 마우스+클릭+키보드 풀 녹화 ---
+  function generateRecordingScript(): string {
+    const stopPath = join(MACROS_DIR, '_rec_stop').replace(/\\/g, '\\\\')
+    const outPath = join(MACROS_DIR, '_rec_output.txt').replace(/\\/g, '\\\\')
+    const lines: string[] = []
+
+    lines.push('Add-Type @"')
+    lines.push('using System;')
+    lines.push('using System.Runtime.InteropServices;')
+    lines.push('public class IR {')
+    lines.push('  [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int vKey);')
+    lines.push('  [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT p);')
+    lines.push('  [StructLayout(LayoutKind.Sequential)] public struct POINT { public int x, y; }')
+    lines.push('}')
+    lines.push('"@')
+    lines.push('')
+    lines.push(`$stopFile = "${stopPath}"`)
+    lines.push(`$outFile = "${outPath}"`)
+    lines.push('$events = [System.Collections.ArrayList]::new()')
+    lines.push('$start = [DateTime]::Now')
+    lines.push('$lastX = -9999; $lastY = -9999')
+    lines.push('$prevLMB = $false; $prevRMB = $false')
+    lines.push('$prevKeys = @{}')
+    lines.push('')
+
+    // Key VK codes to monitor
+    const vkEntries: string[] = []
+    for (const [name, hex] of Object.entries(VK_CODES)) {
+      if (name === 'super') continue // skip duplicate
+      vkEntries.push(`${hex}="${name}"`)
+    }
+    lines.push('$keys = @{' + vkEntries.join('; ') + '}')
+    lines.push('')
+    lines.push('while (-not (Test-Path $stopFile)) {')
+    lines.push('  $t = [int]([DateTime]::Now - $start).TotalMilliseconds')
+    lines.push('  $p = New-Object IR+POINT')
+    lines.push('  [IR]::GetCursorPos([ref]$p)')
+    lines.push('')
+    lines.push('  if ($p.x -ne $lastX -or $p.y -ne $lastY) {')
+    lines.push('    [void]$events.Add("p|$t|$($p.x)|$($p.y)")')
+    lines.push('    $lastX = $p.x; $lastY = $p.y')
+    lines.push('  }')
+    lines.push('')
+    lines.push('  $lmb = ([IR]::GetAsyncKeyState(0x01) -band 0x8000) -ne 0')
+    lines.push('  $rmb = ([IR]::GetAsyncKeyState(0x02) -band 0x8000) -ne 0')
+    lines.push('  if ($lmb -and -not $prevLMB) { [void]$events.Add("c|$t|$($p.x)|$($p.y)|left") }')
+    lines.push('  if ($rmb -and -not $prevRMB) { [void]$events.Add("c|$t|$($p.x)|$($p.y)|right") }')
+    lines.push('  $prevLMB = $lmb; $prevRMB = $rmb')
+    lines.push('')
+    lines.push('  foreach ($vk in $keys.Keys) {')
+    lines.push('    $down = ([IR]::GetAsyncKeyState($vk) -band 0x8000) -ne 0')
+    lines.push('    $name = $keys[$vk]')
+    lines.push('    if ($down -and -not $prevKeys[$vk]) { [void]$events.Add("k|$t|$name|d") }')
+    lines.push('    elseif (-not $down -and $prevKeys[$vk]) { [void]$events.Add("k|$t|$name|u") }')
+    lines.push('    $prevKeys[$vk] = $down')
+    lines.push('  }')
+    lines.push('')
+    lines.push('  Start-Sleep -Milliseconds 16')
+    lines.push('}')
+    lines.push('')
+    lines.push('$events -join "`n" | Set-Content $outFile -Encoding UTF8')
+
+    return lines.join('\r\n')
+  }
+
+  function convertRecordedEvents(content: string): MacroStepType[] {
+    const rawLines = content.split('\n').filter(l => l.trim())
+    if (rawLines.length === 0) return []
+
+    const steps: MacroStepType[] = []
+    let pathBuf: Array<{ t: number; x: number; y: number }> = []
+    let lastStepEnd = 0
+    const mods = new Set<string>()
+    const MOD_KEYS = new Set(['shift', 'ctrl', 'alt', 'lshift', 'rshift', 'lctrl', 'rctrl', 'lalt', 'ralt'])
+
+    const flushPath = (): void => {
+      if (pathBuf.length < 2) { pathBuf = []; return }
+      const t0 = pathBuf[0].t
+      const points = pathBuf.map(p => ({ t: p.t - t0, x: p.x, y: p.y }))
+      steps.push({ type: 'path', points, duration: points[points.length - 1].t })
+      lastStepEnd = pathBuf[pathBuf.length - 1].t
+      pathBuf = []
+    }
+
+    const maybeWait = (t: number): void => {
+      const gap = t - lastStepEnd
+      if (gap > 50) steps.push({ type: 'wait', ms: gap })
+    }
+
+    for (const line of rawLines) {
+      const p = line.split('|')
+      const t = parseInt(p[1])
+
+      switch (p[0]) {
+        case 'p':
+          pathBuf.push({ t, x: parseInt(p[2]), y: parseInt(p[3]) })
+          break
+        case 'c':
+          flushPath()
+          maybeWait(t)
+          steps.push({ type: 'click', x: parseInt(p[2]), y: parseInt(p[3]), button: p[4] as 'left' | 'right' })
+          lastStepEnd = t
+          break
+        case 'k':
+          if (p[3] === 'd') {
+            const keyName = p[2].replace(/^[lr]/, '') // lshift→shift, rctrl→ctrl
+            if (MOD_KEYS.has(p[2])) {
+              mods.add(keyName)
+            } else {
+              flushPath()
+              maybeWait(t)
+              const keys = mods.size > 0 ? [...mods, p[2]] : [p[2]]
+              steps.push({ type: 'key', keys })
+              lastStepEnd = t
+            }
+          } else {
+            const keyName = p[2].replace(/^[lr]/, '')
+            if (MOD_KEYS.has(p[2])) mods.delete(keyName)
+          }
+          break
+      }
+    }
+    flushPath()
+    return steps
+  }
+
+  ipcMain.handle('start-full-recording', () => {
+    if (fullRecProcess || macroProcess) return
+
+    const script = generateRecordingScript()
+    const scriptPath = join(MACROS_DIR, '_recording.ps1')
+    const stopPath = join(MACROS_DIR, '_rec_stop')
+    const outPath = join(MACROS_DIR, '_rec_output.txt')
+
+    // Clean up signal/output files
+    try { unlinkSync(stopPath) } catch { /* ignore */ }
+    try { unlinkSync(outPath) } catch { /* ignore */ }
+
+    writeFileSync(scriptPath, '\ufeff' + script, 'utf-8')
+    writeFileSync(join(MACROS_DIR, '_debug_fullrec.ps1'), '\ufeff' + script, 'utf-8')
+    console.log('[FULLREC] Script written:', scriptPath, 'length:', script.length)
+
+    const sendRecStatus = (status: unknown): void => {
+      mainWindow?.webContents.send('full-rec-status', status)
+    }
+
+    // 3-second countdown
+    let countdown = 3
+    sendRecStatus({ state: 'countdown', remaining: countdown })
+
+    const countdownInterval = setInterval(() => {
+      countdown--
+      if (countdown > 0) {
+        sendRecStatus({ state: 'countdown', remaining: countdown })
+      } else {
+        clearInterval(countdownInterval)
+        mainWindow?.hide()
+
+        fullRecProcess = spawn('powershell.exe', ['-ExecutionPolicy', 'Bypass', '-File', scriptPath], {
+          stdio: ['ignore', 'pipe', 'pipe'],
+          windowsHide: true
+        })
+
+        fullRecProcess.stdout?.on('data', (d: Buffer) => console.log('[FULLREC]', d.toString()))
+        fullRecProcess.stderr?.on('data', (d: Buffer) => {
+          console.error('[FULLREC ERR]', d.toString())
+          // If there's an error during start, notify
+          const errMsg = d.toString().trim()
+          if (errMsg.length > 0) {
+            sendRecStatus({ state: 'error', error: errMsg.substring(0, 200) })
+          }
+        })
+
+        sendRecStatus({ state: 'recording' })
+
+        // Register stop shortcut: Win+Space
+        try {
+          globalShortcut.register('Ctrl+Space', () => {
+            writeFileSync(stopPath, 'stop', 'utf-8')
+          })
+        } catch { /* ignore */ }
+
+        fullRecProcess.on('exit', () => {
+          fullRecProcess = null
+          try { globalShortcut.unregister('Ctrl+Space') } catch { /* ignore */ }
+          mainWindow?.show()
+          mainWindow?.focus()
+
+          // Read and convert events
+          try {
+            const content = readFileSync(outPath, 'utf-8')
+            const steps = convertRecordedEvents(content)
+            sendRecStatus({ state: 'done', steps })
+          } catch {
+            sendRecStatus({ state: 'done', steps: [] })
+          }
+
+          // Clean up
+          try { unlinkSync(scriptPath) } catch { /* ignore */ }
+          try { unlinkSync(stopPath) } catch { /* ignore */ }
+          try { unlinkSync(outPath) } catch { /* ignore */ }
+        })
+
+        fullRecProcess.on('error', (err) => {
+          fullRecProcess = null
+          try { globalShortcut.unregister('Ctrl+Space') } catch { /* ignore */ }
+          mainWindow?.show()
+          mainWindow?.focus()
+          sendRecStatus({ state: 'error', error: err.message })
+        })
+      }
+    }, 1000)
+  })
+
+  ipcMain.handle('stop-full-recording', () => {
+    const stopPath = join(MACROS_DIR, '_rec_stop')
+    writeFileSync(stopPath, 'stop', 'utf-8')
   })
 
   // --- QuickRec: 화면 녹화 ---
@@ -1393,7 +2079,10 @@ window._stopRec=function(){
   // 이미지 데이터 읽기 (미리보기용)
   ipcMain.handle('get-image-data', (_e, filePath: string) => {
     try {
-      if (!existsSync(filePath) || !filePath.startsWith(RECORDINGS_DIR)) return null
+      const MATCH_REFS = join(homedir(), '.claude', 'match-refs')
+      const MATCH_SESSIONS = join(homedir(), '.claude', 'match-sessions')
+      const allowedDirs = [RECORDINGS_DIR, MATCH_REFS, MATCH_SESSIONS]
+      if (!existsSync(filePath) || !allowedDirs.some(d => filePath.startsWith(d))) return null
       const img = nativeImage.createFromPath(filePath)
       if (img.isEmpty()) return null
       return img.toDataURL()
@@ -1688,8 +2377,204 @@ app.whenReady().then(async () => {
   })
 
   await skillsService.init()
-  skillsService.watch((skills) => { mainWindow?.webContents.send('skills-updated', skills) })
-  gitService.startPolling((statuses) => { mainWindow?.webContents.send('git-status-updated', statuses) }, skillsService.getProjects())
+
+  const gitPollCallback = (statuses: Record<string, import('./services/gitService').GitStatus>): void => {
+    mainWindow?.webContents.send('git-status-updated', statuses)
+  }
+
+  skillsService.watch((skills) => {
+    mainWindow?.webContents.send('skills-updated', skills)
+    // 스킬 변경 시 Git 폴링도 새 프로젝트 리스트로 재시작
+    gitService.stopPolling()
+    gitService.startPolling(gitPollCallback, skillsService.getProjects())
+  })
+
+  // Network Test - admin exec via Task Scheduler
+  const NET_TASK_NAME = 'SophiaHubNetAdmin'
+  const NET_SCRIPTS_DIR = join(homedir(), '.claude', 'net-test')
+  if (!existsSync(NET_SCRIPTS_DIR)) mkdirSync(NET_SCRIPTS_DIR, { recursive: true })
+
+  function netAdminTaskExists(): boolean {
+    try {
+      execSync(`schtasks /query /tn "${NET_TASK_NAME}"`, { stdio: 'ignore' })
+      return true
+    } catch { return false }
+  }
+
+  async function setupNetAdminTask(): Promise<boolean> {
+    const scriptPath = join(NET_SCRIPTS_DIR, '_net_cmd.ps1')
+    writeFileSync(scriptPath, '# placeholder', 'utf-8')
+    const setupScript = [
+      `$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-WindowStyle Hidden -ExecutionPolicy Bypass -File "${scriptPath}"'`,
+      `$principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -RunLevel Highest`,
+      `Register-ScheduledTask -TaskName '${NET_TASK_NAME}' -Action $action -Principal $principal -Force`
+    ].join('\r\n')
+    const setupPath = join(NET_SCRIPTS_DIR, '_setup.ps1')
+    writeFileSync(setupPath, '\ufeff' + setupScript, 'utf-8')
+
+    return new Promise((resolve) => {
+      const wrapperCmd = `Start-Process powershell.exe -Verb RunAs -ArgumentList '-ExecutionPolicy','Bypass','-File','${setupPath.replace(/'/g, "''")}' -Wait`
+      const proc = spawn('powershell.exe', ['-ExecutionPolicy', 'Bypass', '-Command', wrapperCmd], {
+        stdio: 'ignore', windowsHide: true
+      })
+      proc.on('exit', () => {
+        try { unlinkSync(setupPath) } catch { /* ignore */ }
+        resolve(netAdminTaskExists())
+      })
+      proc.on('error', () => resolve(false))
+    })
+  }
+
+  ipcMain.handle('net-check-admin', () => netAdminTaskExists())
+  ipcMain.handle('net-setup-admin', () => setupNetAdminTask())
+
+  ipcMain.handle('exec-cmd', async (_e, cmd: string, asAdmin: boolean) => {
+    if (!asAdmin) {
+      return new Promise((resolve) => {
+        const { exec: execCmd } = require('child_process')
+        execCmd(cmd, { timeout: 15000, windowsHide: true }, (err: Error | null, stdout: string, stderr: string) => {
+          resolve({ exitCode: err ? 1 : 0, stdout: stdout || '', stderr: stderr || '' })
+        })
+      })
+    }
+    // Admin execution via Task Scheduler
+    const scriptPath = join(NET_SCRIPTS_DIR, '_net_cmd.ps1')
+    const rid = Date.now().toString(36)
+    const outputPath = join(NET_SCRIPTS_DIR, `_out_${rid}.txt`)
+    const crlf = '"`r`n"'
+    const psLines = [
+      'chcp 65001 | Out-Null',
+      '$OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8',
+      'try {',
+      '  $out = (' + cmd + ') 2>&1 | Out-String',
+      '  [System.IO.File]::WriteAllText(\'' + outputPath + '\', ("OK" + ' + crlf + ' + $out), [System.Text.Encoding]::UTF8)',
+      '} catch {',
+      '  [System.IO.File]::WriteAllText(\'' + outputPath + '\', ("ERR" + ' + crlf + ' + $_.Exception.Message), [System.Text.Encoding]::UTF8)',
+      '}'
+    ]
+    const psContent = psLines.join('\r\n')
+    writeFileSync(scriptPath, '\ufeff' + psContent, 'utf-8')
+
+    try {
+      execSync(`schtasks /run /tn "${NET_TASK_NAME}"`, { stdio: 'ignore' })
+    } catch {
+      return { exitCode: 1, stdout: '', stderr: '관리자 권한 설정이 필요합니다. 상단 버튼으로 설정해주세요.' }
+    }
+
+    // Wait for output
+    for (let i = 0; i < 30; i++) {
+      await new Promise(r => setTimeout(r, 500))
+      if (existsSync(outputPath)) {
+        await new Promise(r => setTimeout(r, 100))
+        let content = ''
+        try { content = readFileSync(outputPath, 'utf-8').replace(/^\ufeff/, '') } catch { continue }
+        try { unlinkSync(outputPath) } catch { /* ignore */ }
+        const lines = content.split(/\r?\n/)
+        const status = lines[0]?.trim()
+        const output = lines.slice(1).join('\n').trim()
+        return { exitCode: status === 'OK' ? 0 : 1, stdout: status === 'OK' ? output : '', stderr: status !== 'OK' ? output : '' }
+      }
+    }
+    return { exitCode: 1, stdout: '', stderr: '실행 시간 초과' }
+  })
+
+  // Network Test - 게임 프로세스 연결 IP 탐지 (netstat 기반, 스크립트 불필요)
+  ipcMain.handle('net-detect-game-ips', async () => {
+    return new Promise((resolve) => {
+      const { exec: execCmd } = require('child_process')
+      execCmd(
+        'netstat -no -p tcp | findstr "ESTABLISHED"',
+        { timeout: 10000, windowsHide: true, encoding: 'buffer' },
+        (err: Error | null, stdout: Buffer) => {
+          if (err || !stdout) { resolve({}); return }
+          try {
+            const text = stdout.toString('utf-8')
+            // pid -> remote ip mapping
+            const pidIps: Record<string, Set<string>> = {}
+            for (const line of text.split('\n')) {
+              const parts = line.trim().split(/\s+/)
+              if (parts.length < 5) continue
+              const remote = parts[2]
+              const pid = parts[4]
+              if (!pid || pid === '0') continue
+              const ip = remote.split(':')[0]
+              if (ip === '127.0.0.1' || ip === '0.0.0.0' || ip === '::1') continue
+              if (!pidIps[pid]) pidIps[pid] = new Set()
+              pidIps[pid].add(ip)
+            }
+
+            // pid -> process name mapping
+            const pids = Object.keys(pidIps)
+            if (pids.length === 0) { resolve({}); return }
+
+            execCmd(
+              'tasklist /FO CSV /NH',
+              { timeout: 5000, windowsHide: true, encoding: 'buffer' },
+              (err2: Error | null, stdout2: Buffer) => {
+                if (err2 || !stdout2) { resolve({}); return }
+                const taskText = stdout2.toString('utf-8')
+                const pidName: Record<string, string> = {}
+                for (const line of taskText.split('\n')) {
+                  const m = line.match(/"([^"]+)","(\d+)"/)
+                  if (m) pidName[m[2]] = m[1].replace(/\.exe$/i, '')
+                }
+
+                const sysProcs = new Set(['svchost','chrome','msedge','msedgewebview2','claude','node','electron',
+                  'OUTLOOK','OneDrive','OneDrive.Sync.Service','ms-teams','EXCEL','SecureConnector','TaniumClient',
+                  'ErmEndpoint','ErmEndpointUser','edpa','ASDSvc','EPPservice','EPPClient','purpleon',
+                  'MsSense','SearchHost','RuntimeBroker','ApplicationFrameHost','sihost','smartscreen',
+                  'Code','WindowsTerminal','powershell','cmd','conhost','explorer','System',
+                  'tasklist','netstat','findstr','wininit','csrss','lsass','services','spoolsv',
+                  'dwm','ctfmon','fontdrvhost','WmiPrvSE','dllhost','mstsc','taskhostw','TabTip',
+                  'TextInputHost','WidgetService','Widgets','PhoneExperienceHost','LockApp','ShellExperienceHost'])
+
+                const games: Record<string, string[]> = {}
+                for (const pid of pids) {
+                  const name = pidName[pid]
+                  if (!name || sysProcs.has(name)) continue
+                  const ips = Array.from(pidIps[pid])
+                  if (!games[name]) games[name] = []
+                  for (const ip of ips) {
+                    if (!games[name].includes(ip)) games[name].push(ip)
+                  }
+                }
+                resolve(games)
+              }
+            )
+          } catch {
+            resolve({})
+          }
+        }
+      )
+    })
+  })
+
+  // Network Test - 활성 QA_BLOCK 방화벽 규칙 조회
+  ipcMain.handle('net-get-block-rules', async () => {
+    return new Promise((resolve) => {
+      const { exec: execCmd } = require('child_process')
+      execCmd(
+        'powershell -Command "Get-NetFirewallRule | Where-Object { $_.DisplayName -like \'*QA_BLOCK*\' -and $_.Enabled -eq \'True\' } | Select-Object DisplayName, Direction | ForEach-Object { $_.DisplayName + \'|\' + $_.Direction }"',
+        { timeout: 10000, windowsHide: true, encoding: 'buffer' },
+        (err: Error | null, stdout: Buffer) => {
+          if (err || !stdout) { resolve([]); return }
+          try {
+            const text = stdout.toString('utf-8').trim()
+            if (!text) { resolve([]); return }
+            const rules = text.split('\n').filter(Boolean).map(line => {
+              const [name, direction] = line.trim().split('|')
+              return { name: name || '', direction: direction || '' }
+            })
+            resolve(rules)
+          } catch {
+            resolve([])
+          }
+        }
+      )
+    })
+  })
+
+  gitService.startPolling(gitPollCallback, skillsService.getProjects())
 })
 
 app.on('will-quit', () => {

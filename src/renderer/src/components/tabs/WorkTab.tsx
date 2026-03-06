@@ -301,22 +301,12 @@ function getWeekStart(): number {
   return d.getTime()
 }
 
-// --- Goals Strip (synced with HomeTab) ---
+// --- Goals Strip (synced with HomeTab via Zustand) ---
 function GoalsStrip(): JSX.Element | null {
-  const [goals, setGoals] = useState<Goal[]>([])
-
-  useEffect(() => {
-    const weekStart = getWeekStart()
-    window.api.getStore('goals').then((data) => {
-      if (!Array.isArray(data)) return
-      setGoals((data as Goal[]).filter((g) => g.weekStart >= weekStart))
-    })
-  }, [])
+  const { goals, saveGoals } = useHubStore()
 
   const toggleGoal = (id: string): void => {
-    const updated = goals.map((g) => g.id === id ? { ...g, done: !g.done } : g)
-    setGoals(updated)
-    window.api.setStore('goals', updated)
+    saveGoals(goals.map((g) => g.id === id ? { ...g, done: !g.done } : g))
   }
 
   if (goals.length === 0) return null
@@ -474,19 +464,29 @@ function BacklogItem({ block, index }: { block: string; index: number }): JSX.El
 function BacklogSection(): JSX.Element {
   const [ideas, setIdeas] = useState<string[]>([])
 
-  useEffect(() => {
-    window.api.getIdeaFiles().then((files) => {
-      if (files.length === 0) return
-      // Load latest month file
-      window.api.getIdeaContent(files[0].name).then((content) => {
-        setIdeas(content.split('---').map((s) => s.trim()).filter(Boolean))
-      })
-    })
-  }, [])
+  const loadIdeas = async (): Promise<void> => {
+    try {
+      const files = await window.api.getIdeaFiles()
+      if (files.length === 0) { setIdeas([]); return }
+      // 모든 월 파일에서 아이디어 로드
+      const allIdeas: string[] = []
+      for (const file of files) {
+        const content = await window.api.getIdeaContent(file.name)
+        const blocks = content.split('---').map((s: string) => s.trim()).filter(Boolean)
+        allIdeas.push(...blocks)
+      }
+      setIdeas(allIdeas)
+    } catch {
+      setIdeas([])
+    }
+  }
+
+  useEffect(() => { loadIdeas() }, [])
 
   return (
     <CollapsibleSection title="백로그" icon={<Archive size={14} />} color={colors.text.tertiary} defaultOpen={false}
-      badge={ideas.length > 0 ? `${ideas.length}` : undefined}>
+      badge={ideas.length > 0 ? `${ideas.length}` : undefined}
+      onRefresh={loadIdeas}>
       {ideas.length === 0 ? (
         <div style={{ textAlign: 'center', padding: 16, color: colors.text.tertiary, fontSize: 11 }}>
           채택된 아이디어가 없습니다

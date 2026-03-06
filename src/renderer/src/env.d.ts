@@ -50,12 +50,13 @@ type MacroPathPoint = { t: number; x: number; y: number }
 
 type MacroStep =
   | { type: 'path'; points: MacroPathPoint[]; duration: number }
-  | { type: 'click'; x: number; y: number; button: 'left' | 'right' }
+  | { type: 'click'; x: number; y: number; button: 'left' | 'right'; retry?: { region: { x1: number; y1: number; x2: number; y2: number }; maxRetries: number; delay: number } }
   | { type: 'move'; x: number; y: number }
   | { type: 'direction'; dir: 'left' | 'right' | 'up' | 'down'; speed: number; duration: number }
   | { type: 'text'; value: string }
-  | { type: 'key'; keys: string[] }
+  | { type: 'key'; keys: string[]; repeat?: number; duration?: number; interval?: number }
   | { type: 'wait'; ms: number; random?: boolean; min?: number; max?: number }
+  | { type: 'ocr'; label: string; region: { x1: number; y1: number; x2: number; y2: number }; grid?: { rows: number; cols: number }; threshold?: number; matchMode?: 'resize' | 'template' }
 
 type Macro = {
   id: string; name: string; steps: MacroStep[]
@@ -67,10 +68,48 @@ type Macro = {
 
 type CursorInfo = { x: number; y: number; rgb: string }
 
+type MatchRefImage = {
+  id: string
+  name: string
+  imagePath: string
+}
+
+type SlotMatchResult = {
+  slotIndex: number
+  matchedRef: string | null
+  matchedName: string
+  similarity: number
+}
+
+type MatchRunResult = {
+  run: number
+  timestamp: number
+  imagePath?: string
+  slots: SlotMatchResult[]
+}
+
+type MatchSummaryItem = {
+  count: number
+  rate: number
+}
+
+type OcrSession = {
+  id: string
+  macroId: string
+  macroName: string
+  startedAt: number
+  completedAt?: number
+  totalRuns: number
+  slotsPerRun: number
+  results: MatchRunResult[]
+  summary: Record<string, MatchSummaryItem>
+}
+
 type MacroExecStatus =
   | { state: 'countdown'; remaining: number }
-  | { state: 'running'; currentStep: number; totalSteps: number; currentRepeat: number; totalRepeat: number }
-  | { state: 'stopped'; reason: 'completed' | 'emergency' | 'failsafe' | 'error'; error?: string }
+  | { state: 'running'; currentStep: number; totalSteps: number; currentRepeat: number; totalRepeat: number; ocrCount?: number; lastOcr?: string }
+  | { state: 'ocr-processing'; processed: number; total: number }
+  | { state: 'stopped'; reason: 'completed' | 'emergency' | 'failsafe' | 'error'; error?: string; ocrSession?: OcrSession }
 
 type RecordingSource = {
   id: string
@@ -149,10 +188,31 @@ interface HubAPI {
   getMacros(): Promise<Macro[]>
   saveMacro(macro: Macro): Promise<void>
   deleteMacro(id: string): Promise<void>
+  copyMacroRefs(srcId: string, dstId: string): Promise<boolean>
+  // Macro - 풀 녹화 (Beta)
+  startFullRecording(): Promise<void>
+  stopFullRecording(): Promise<void>
+  onFullRecStatus(cb: (status: { state: string; steps?: MacroStep[]; remaining?: number; error?: string }) => void): () => void
+  // Macro - 관리자 Task Scheduler
+  checkAdminTask(): Promise<boolean>
+  setupAdminTask(): Promise<boolean>
   // Macro - 실행
   executeMacro(macro: Macro): Promise<void>
   stopMacro(): Promise<void>
   onMacroStatus(cb: (status: MacroExecStatus) => void): () => void
+
+  // Image Match / OCR
+  pickOcrRegion(): Promise<{ x1: number; y1: number; x2: number; y2: number } | null>
+  getOcrSessions(): Promise<OcrSession[]>
+  getOcrSession(id: string): Promise<OcrSession | null>
+  deleteOcrSession(id: string): Promise<void>
+  exportOcrSession(id: string): Promise<{ success: boolean; path?: string }>
+  openStreamlitOcr(sessionId: string): Promise<void>
+  captureRegionBuffer(region: { x1: number; y1: number; x2: number; y2: number }): Promise<ArrayBuffer | null>
+  getMatchRefs(macroId: string): Promise<MatchRefImage[]>
+  saveMatchRef(macroId: string, name: string, imagePath: string): Promise<MatchRefImage>
+  saveMatchRefBuffer(macroId: string, name: string, buffer: ArrayBuffer): Promise<MatchRefImage>
+  deleteMatchRef(macroId: string, refId: string): Promise<void>
 
   onSkillsUpdated(cb: (skills: Skill[]) => void): () => void
   onGitStatusUpdated(cb: (statuses: Record<string, GitStatus>) => void): () => void

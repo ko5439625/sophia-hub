@@ -1,7 +1,7 @@
 import { useState, useCallback } from 'react'
 import { useHubStore } from '../store/useHubStore'
 import { colors, typography, spacing, radius, transition } from '../styles/tokens'
-import { Contrast, Link2, Image, Video, Zap, ChevronsLeft, ChevronsRight, ArrowLeft } from 'lucide-react'
+import { Contrast, Link2, Image, Video, Zap, Wifi, ChevronsLeft, ChevronsRight, ArrowLeft } from 'lucide-react'
 import HomeTab from './tabs/HomeTab'
 import WorkTab from './tabs/WorkTab'
 import ToolsTab from './tabs/ToolsTab'
@@ -11,6 +11,7 @@ import LinksTab from './tabs/LinksTab'
 import ImagesTab from './tabs/ImagesTab'
 import QuickRecSection from './tabs/QuickRecSection'
 import MacroSection from './tabs/MacroSection'
+import NetworkTestSection from './tabs/NetworkTestSection'
 
 const TABS: Array<{ id: 'home' | 'work' | 'tools' | 'notes' | 'more'; label: string }> = [
   { id: 'home', label: 'Home' },
@@ -23,13 +24,14 @@ const TABS: Array<{ id: 'home' | 'work' | 'tools' | 'notes' | 'more'; label: str
 const PANEL_W = 420
 const MINI_W = 52
 
-type MiniTool = 'links' | 'images' | 'quickrec' | 'macro' | null
+type MiniTool = 'links' | 'images' | 'quickrec' | 'macro' | 'nettest' | null
 
 const TOOL_ITEMS: Array<{ id: MiniTool; icon: React.ReactNode; color: string; label: string }> = [
   { id: 'quickrec', icon: <Video size={18} />, color: '#FF453A', label: '녹화' },
   { id: 'macro', icon: <Zap size={18} />, color: '#FFD60A', label: '매크로' },
   { id: 'links', icon: <Link2 size={18} />, color: colors.accent.primary, label: '링크' },
-  { id: 'images', icon: <Image size={18} />, color: colors.status.info, label: '이미지' }
+  { id: 'images', icon: <Image size={18} />, color: colors.status.info, label: '이미지' },
+  { id: 'nettest', icon: <Wifi size={18} />, color: '#FF9F0A', label: '네트워크' }
 ]
 
 export default function Dashboard(): JSX.Element {
@@ -183,6 +185,7 @@ export default function Dashboard(): JSX.Element {
             <div style={{ display: miniTool === 'images' ? undefined : 'none' }}><ImagesTab /></div>
             <div style={{ display: miniTool === 'quickrec' ? undefined : 'none' }}><QuickRecSection /></div>
             <div style={{ display: miniTool === 'macro' ? undefined : 'none' }}><MacroSection /></div>
+            <div style={{ display: miniTool === 'nettest' ? undefined : 'none' }}><NetworkTestSection /></div>
           </div>
         </div>
       </div>

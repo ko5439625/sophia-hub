@@ -71,6 +71,18 @@ const api = {
   getMacros: () => ipcRenderer.invoke('get-macros'),
   saveMacro: (macro: unknown) => ipcRenderer.invoke('save-macro', macro),
   deleteMacro: (id: string) => ipcRenderer.invoke('delete-macro', id),
+  copyMacroRefs: (srcId: string, dstId: string) => ipcRenderer.invoke('copy-macro-refs', srcId, dstId),
+  // Macro - 풀 녹화 (Beta)
+  startFullRecording: () => ipcRenderer.invoke('start-full-recording'),
+  stopFullRecording: () => ipcRenderer.invoke('stop-full-recording'),
+  onFullRecStatus: (cb: (status: unknown) => void) => {
+    const h = (_e: unknown, status: unknown) => cb(status)
+    ipcRenderer.on('full-rec-status', h as never)
+    return () => ipcRenderer.removeListener('full-rec-status', h as never)
+  },
+  // Macro - 관리자 Task Scheduler
+  checkAdminTask: () => ipcRenderer.invoke('check-admin-task'),
+  setupAdminTask: () => ipcRenderer.invoke('setup-admin-task'),
   // Macro - 실행
   executeMacro: (macro: unknown) => ipcRenderer.invoke('execute-macro', macro),
   stopMacro: () => ipcRenderer.invoke('stop-macro'),
@@ -85,6 +97,26 @@ const api = {
     ipcRenderer.on('toggle-recording', h as never)
     return () => ipcRenderer.removeListener('toggle-recording', h as never)
   },
+
+  // Image Match / OCR
+  pickOcrRegion: () => ipcRenderer.invoke('pick-ocr-region'),
+  getOcrSessions: () => ipcRenderer.invoke('get-ocr-sessions'),
+  getOcrSession: (id: string) => ipcRenderer.invoke('get-ocr-session', id),
+  deleteOcrSession: (id: string) => ipcRenderer.invoke('delete-ocr-session', id),
+  exportOcrSession: (id: string) => ipcRenderer.invoke('export-ocr-session', id),
+  openStreamlitOcr: (sessionId: string) => ipcRenderer.invoke('open-streamlit-ocr', sessionId),
+  captureRegionBuffer: (region: { x1: number; y1: number; x2: number; y2: number }) => ipcRenderer.invoke('capture-region-buffer', region),
+  getMatchRefs: (macroId: string) => ipcRenderer.invoke('get-match-refs', macroId),
+  saveMatchRef: (macroId: string, name: string, imagePath: string) => ipcRenderer.invoke('save-match-ref', macroId, name, imagePath),
+  saveMatchRefBuffer: (macroId: string, name: string, buffer: ArrayBuffer) => ipcRenderer.invoke('save-match-ref-buffer', macroId, name, buffer),
+  deleteMatchRef: (macroId: string, refId: string) => ipcRenderer.invoke('delete-match-ref', macroId, refId),
+
+  // Network Test
+  exec: (cmd: string, asAdmin?: boolean) => ipcRenderer.invoke('exec-cmd', cmd, asAdmin ?? false),
+  netCheckAdmin: () => ipcRenderer.invoke('net-check-admin'),
+  netSetupAdmin: () => ipcRenderer.invoke('net-setup-admin'),
+  netDetectGameIps: () => ipcRenderer.invoke('net-detect-game-ips'),
+  netGetBlockRules: () => ipcRenderer.invoke('net-get-block-rules'),
 
   onSkillsUpdated: (cb: (skills: unknown[]) => void) => {
     const h = (_e: unknown, s: unknown[]) => cb(s)

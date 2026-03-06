@@ -76,9 +76,9 @@ export default function HomeTab(): JSX.Element {
   const { skills, gitStatuses, recentSkills, launchSkill, activeProject, setActiveProject } = useHubStore()
   const projects = skills.filter((s) => s.projectPath)
 
+  const { goals, saveGoals } = useHubStore()
   const [standupData, setStandupData] = useState<CommitsByProject[]>([])
   const [standupCopied, setStandupCopied] = useState(false)
-  const [goals, setGoals] = useState<Goal[]>([])
   const [newGoalText, setNewGoalText] = useState('')
   const [addingGoal, setAddingGoal] = useState(false)
   const [routines, setRoutines] = useState<Routine[]>([])
@@ -125,7 +125,7 @@ export default function HomeTab(): JSX.Element {
       if (Array.isArray(data)) {
         const weekStart = getWeekStart()
         const currentGoals = (data as Goal[]).filter((g) => g.weekStart >= weekStart)
-        setGoals(currentGoals)
+        saveGoals(currentGoals)
       }
     })
   }, [])
@@ -135,11 +135,6 @@ export default function HomeTab(): JSX.Element {
       if (Array.isArray(data)) setRoutines(data as Routine[])
     })
   }, [])
-
-  const saveGoals = (updated: Goal[]): void => {
-    setGoals(updated)
-    window.api.setStore('goals', updated)
-  }
 
   const addGoal = (): void => {
     if (!newGoalText.trim()) return
